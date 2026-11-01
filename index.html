@@ -2768,9 +2768,18 @@ function parseHtmlDocument(html, baseUrl) {
   const canonical = meta('link[rel="canonical"]', 'href');
 
   // Contenedor principal
-  const candidates = ['[itemprop="articleBody"]', '.entry-content', '.post-content', 'article .elementor-widget-theme-post-content', 'article', 'main', '.content', '#content'];
+  // Texto real de un contenedor: párrafos, títulos y listas, sin menú, cabecera, pie ni formularios.
+  const SKIP = 'nav, header, footer, aside, form, script, style, noscript';
+  const bodyLen = el => [...el.querySelectorAll('p, h1, h2, h3, h4, li')].filter(x => !x.closest(SKIP)).reduce((t, x) => t + textOf(x).length, 0);
+  // 'article' sólo cuenta si la página tiene un único artículo: en portadas y categorías cada ficha es un <article>.
+  const candidates = ['[itemprop="articleBody"]', '.entry-content', '.post-content', 'article .elementor-widget-theme-post-content', '[data-elementor-type="wp-post"]', '[data-elementor-type="single-post"]', 'article', '[data-elementor-type="wp-page"]', 'main', '#content', '.content'];
   let root = null;
-  for (const c of candidates) { const el = dom.querySelector(c); if (el && textOf(el).length > 300) { root = el; break; } }
+  for (const c of candidates) {
+    const all = [...dom.querySelectorAll(c)];
+    if (c === 'article' && all.length !== 1) continue;
+    const el = all.sort((a, b) => bodyLen(b) - bodyLen(a))[0];
+    if (el && bodyLen(el) > 300) { root = el; break; }
+  }
   if (!root) {
     // mayor densidad de párrafos
     let best = null, bestLen = 0;
@@ -2828,7 +2837,10 @@ function parseHtmlDocument(html, baseUrl) {
   const fullText = blocks.map(b => b.text).join('\n');
   const pageText = textOf(dom.body || dom.documentElement);
   // Detección de contenido restringido
-  const hasLoginForm = !!dom.querySelector('input[type="password"]');
+  // Un formulario de acceso en el pie o en la barra lateral (común a todo el sitio) no indica contenido restringido:
+  // sólo cuenta si está dentro del contenido principal o si la página no tiene apenas nada más.
+  const pw = [...dom.querySelectorAll('input[type="password"]')];
+  const hasLoginForm = pw.some(i => root.contains(i) && !i.closest('footer, aside, nav, header, .widget, [class*="footer"], [class*="sidebar"]')) || (pw.length > 0 && textOf(dom.body || dom.documentElement).length < 1500);
   const restrictedMsg = RESTRICTED_PATTERNS.some(p => p.test(pageText));
   let estado = 'ok', nota = 'Contenido público extraído completo.';
   if ((hasLoginForm || restrictedMsg) && fullText.length < LIB_CFG.minFullText) {
