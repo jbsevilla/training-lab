@@ -2375,7 +2375,12 @@ const ACTSTORE = {
   cache: [], seriesSaved: new Set(), q: Promise.resolve(), gen: 0, loaded: false,
   get() {
     const raw = localStorage.getItem('tl_activities');  // datos antiguos (o escritos por pruebas): se migran
-    if (raw !== null) { localStorage.removeItem('tl_activities'); let arr = []; try { arr = JSON.parse(raw) || []; } catch { } this.replaceAll(arr); }
+    // Los datos antiguos sólo se borran de localStorage cuando IndexedDB confirma que se han guardado.
+    if (raw !== null && raw !== this._migRaw) {
+      let arr = null; try { arr = JSON.parse(raw); } catch { }
+      if (!Array.isArray(arr)) { console.error('tl_activities no es una lista válida: se conserva sin tocar'); }
+      else { this._migRaw = raw; this.replaceAll(arr); this.q.then(() => { if (this.lastOk && localStorage.getItem('tl_activities') === raw) localStorage.removeItem('tl_activities'); }); }
+    }
     return this.cache.slice();
   },
   replaceAll(arr) { this.gen++; this.cache = arr.slice(); this.seriesSaved = new Set(); this.persist(true); },
@@ -2392,15 +2397,16 @@ const ACTSTORE = {
             if (full) S.getAllKeys().onsuccess = e => e.target.result.forEach(k => { if (!ids.has(k)) S.delete(k); });
             snap.forEach(a => { const { serie, ...light } = a; A.put(light); if (!this.seriesSaved.has(a.id)) { S.put({ id: a.id, serie: serie || [] }); this.seriesSaved.add(a.id); } });
           };
-          t.oncomplete = res; t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
+          t.oncomplete = () => { this.lastOk = true; res(); }; t.onerror = () => rej(t.error); t.onabort = () => rej(t.error);
         });
-      } catch (e) { console.error('No se pudieron guardar las actividades', e); toast('Error al guardar las actividades: ' + (e?.message || e), 6000); }
+      } catch (e) { this.lastOk = false; console.error('No se pudieron guardar las actividades', e); toast('Error al guardar las actividades: ' + (e?.message || e), 6000); }
     });
     return this.q;
   },
   async load() {
     const g0 = this.gen;
-    if (localStorage.getItem('tl_activities') !== null) { this.get(); this.loaded = true; return; }
+    const raw = localStorage.getItem('tl_activities');
+    if (raw !== null) { this.get(); if (this._migRaw === raw) { await this.q; this.loaded = true; return; } }
     try {
       const [acts, series] = await Promise.all([LDB.all('acts'), LDB.all('series')]);
       if (this.gen !== g0) { this.loaded = true; return; } // otro proceso reemplazó los datos mientras se cargaba
@@ -7524,6 +7530,22 @@ const CHAT_ANS = {
     if (cambios.length) PLAN.save(plan, { tipo: 'disponibilidad', semana: w.inicio, decision: 'reajuste por disponibilidad', motivo: `No disponible el ${fecha}${f.notas ? ': ' + f.notas : ''}`, datos: { fecha, correr: f.correr, bici: f.bici }, criterios: ['A-DESC', 'D-GLOBAL'], confianza: 'declarado', plan_anterior: before, plan_nuevo: summarizeWeek(w), aceptada: true });
     return { t: `El ${UI.esc(UI.fmtDay(fecha))}: ${f.correr ? 'puedes correr' : 'no puedes correr'}${f.bici ? '' : ', sin bici'}. ${cambios.length ? `Cambios en el plan (registrados en el historial):<ul class="eng-list">${cambios.map(c => `<li>${UI.esc(c)}</li>`).join('')}</ul>` : 'No había sesiones afectadas ese día.'}<div class="ui-muted">Las sesiones exigentes sólo se mueven a un día disponible que no quede pegado a otra sesión exigente; si no lo hay, se quitan en vez de concentrarlas.</div>`, datos: [`fecha=${fecha}`, `sesiones_afectadas=${afect.length}`], reglas: [{ id: 'A-DESC' }, { id: 'D-GLOBAL' }], acciones: [['Ver la semana', `CAL.view='semana';CAL.ref='${fecha}';navigate('calendario')`], ['Historial de cambios', "navigate('cambios')"]] };
   },
+  async metodologia() {
+    const rules = (await LDB.all('rules')).filter(r => r.activa !== false && r.etiqueta === 'A');
+    const order = ['Continuidad', 'Zonas', 'Ritmos', 'Sesiones de calidad', 'Progresión', 'Deriva cardiaca', 'Control de carga', 'Fatiga en sesión', 'Fuerza', 'Lesiones', 'Tapering'];
+    const by = {}; rules.forEach(r => (by[r.seccion] = by[r.seccion] || []).push(r));
+    const secs = Object.keys(by).sort((a, b) => ((order.indexOf(a) + 1) || 99) - ((order.indexOf(b) + 1) || 99));
+    const docs = (await LDB.all('docs')).length;
+    const t = `Mi forma de entrenarte sale de la metodología de <b>Luis del Águila</b>, recogida como reglas que tú has aprobado (${rules.length} de nivel A). No invento criterios: cada recomendación cita la regla de la que sale. En resumen:
+      <ul class="eng-list"><li><b>Continuidad antes que ambición</b>: mejor un plan que se sostiene que uno más duro que se interrumpe.</li>
+      <li><b>Intensidad individual</b>: tres zonas a partir de tus umbrales (test), no de la FC máxima estimada.</li>
+      <li><b>El umbral como trabajo principal</b>, progresando en volumen al mismo ritmo; los ritmos sólo cambian tras un test.</li>
+      <li><b>Pocas sesiones exigentes, bien recuperadas</b>, con fuerza integrada y sin subir volumen e intensidad a la vez.</li>
+      <li><b>Decisiones con datos</b>: deriva, desacople y carga interna (TRIMP) para saber si asimilas, sin reaccionar a una sola sesión.</li></ul>
+      <details><summary>Las reglas, por apartado</summary>${secs.map(sec => `<div style="margin-top:6px"><b>${UI.esc(sec)}</b>${by[sec].map(r => `<div><span class="eng-rule">${UI.esc(r.id)}</span> ${UI.esc(r.texto)}</div>`).join('')}</div>`).join('')}</details>
+      ${docs ? '' : '<div class="ui-muted" style="margin-top:6px">La biblioteca todavía no tiene las publicaciones originales: impórtalas en Biblioteca → Añadir para que las respuestas puedan citar el texto de Luis.</div>'}`;
+    return { t, datos: [`reglas_A=${rules.length}`, `publicaciones=${docs}`], reglas: rules.map(r => ({ id: r.id, etiqueta: r.etiqueta, texto: r.texto })), frags: [], tarea: 'consulta', data: { pregunta: 'filosofía de entrenamiento' }, acciones: [['Ver las reglas aprobadas', "navigate('biblioteca')"]] };
+  },
   async libre(q) {
     const src = await chatSources(q, null);
     const body = `${src.reglas.slice(0, 3).map(r => `<div style="margin-top:6px"><span class="eng-rule">${UI.esc(r.id)}</span> ${UI.esc(r.texto)}</div>`).join('')}${src.frags.slice(0, 2).map(f => `<div style="margin-top:6px">📄 <b>${UI.esc(f.titulo)}</b>${f.enc ? ' › ' + UI.esc(f.enc) : ''}<br><span class="ui-muted">${UI.esc(f.texto)}…</span></div>`).join('')}`;
@@ -7581,9 +7603,10 @@ function chatIntent(t) {
   if (/(no puedo|no podr[eé]|disponib|viaj|trabajo el|turno|guardia|libre el|cambiar el d[ií]a|mover la sesi[oó]n)/.test(tl)) return 'disponibilidad';
   if (/(dorm[ií]|sueño|cansad|fatigad|agotad|estr[eé]s|sensaci|me noto|me siento|fresco)/.test(tl) && !/sesi[oó]n|rodaje|series/.test(tl)) return 'sensaciones';
   if (/(evoluci|progres|mejor(ando|o)|empeor|tendenc|umbral(es)? (han|ha)|c[oó]mo voy)/.test(tl)) return 'evolucion';
-  if (/(plan|toca|semana|ma[ñn]ana|pr[oó]xim|calendario|qu[eé] hago)/.test(tl)) return 'plan';
+  if (/(filosof|metodolog|en qu[eé] te basas|qu[eé] principios|tus principios|tu enfoque|c[oó]mo entrenas|qu[eé] criterios? (sigues|usas|utilizas)|de d[oó]nde salen tus)/.test(tl)) return 'metodologia';
+  const general = /^(¿)?\s*(cu[aá]nt|c[oó]mo (debo|se|hago)|qu[eé] (ritmo|es|significa)|por qu[eé] se|deber[ií]a|es (bueno|malo|mejor)|se (debe|puede)|hay que)/.test(tl);
+  if (!general && /(mi plan|el plan|toca|esta semana|la semana que viene|pr[oó]xima semana|ma[ñn]ana|pr[oó]xim[ao] sesi|calendario|qu[eé] hago)/.test(tl)) return 'plan';
   const pasado = /(\bayer\b|\bhoy\b|anteayer|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\b\d{1,2}\/\d{1,2}\b|\bfue\b|\bhice\b|sali[oó]|qu[eé] tal|[uú]ltim[ao]|mi (sesi[oó]n|rodaje|entreno|tirada|carrera|salida))/.test(tl);
-  const general = /^(¿)?\s*(cu[aá]nt|c[oó]mo (debo|se|hago)|qu[eé] (ritmo|es|significa)|por qu[eé] se|deber[ií]a|es (bueno|malo|mejor))/.test(tl);
   if (pasado && !general && /(sesi[oó]n|rodaje|series|tirada|entreno|entrenamiento|carrera|bici|salida|test|umbral|calidad|ayer|hoy|anteayer|lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo|\d{1,2}\/\d{1,2})/.test(tl)) return 'sesion';
   return 'libre';
 }
@@ -7616,6 +7639,7 @@ async function chatSend() {
   if (it === 'sesion') return chatReply(() => CHAT_ANS.sesion(chatFindActivity(t), t));
   if (it === 'plan') return chatReply(() => CHAT_ANS.plan(t));
   if (it === 'evolucion') return chatReply(() => CHAT_ANS.evolucion(t));
+  if (it === 'metodologia') return chatReply(() => CHAT_ANS.metodologia());
   return chatReply(() => CHAT_ANS.libre(t));
 }
 const CHAT_UI = { pre: null, busy: false };

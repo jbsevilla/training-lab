@@ -35,7 +35,9 @@ async function robotsAllows(u) {
     robotsCache.set(origin, rules);
   }
   const path = u.pathname + u.search;
-  const match = arr => arr.filter(p => path.startsWith(p.replace(/\*.*$/, ''))).reduce((m, p) => Math.max(m, p.length), -1);
+  // Patrones de robots.txt: '*' = cualquier secuencia, '$' final = fin de URL; gana la regla más larga.
+  const toRe = p => new RegExp('^' + p.replace(/[.+?^{}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\\?\$$/, '$'));
+  const match = arr => arr.filter(p => { try { return toRe(p).test(path); } catch { return false; } }).reduce((m, p) => Math.max(m, p.length), -1);
   const d = match(rules.disallow), a = match(rules.allow);
   return d < 0 || a >= d ? (rules.unknown ? 'unknown' : 'allowed') : 'disallowed';
 }
@@ -70,3 +72,5 @@ exports.handler = async (event) => {
   out.truncated = truncated;
   return { statusCode: 200, headers, body: JSON.stringify(out) };
 };
+
+exports._robotsAllows = robotsAllows;
