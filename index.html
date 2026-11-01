@@ -2759,9 +2759,13 @@ function parseHtmlDocument(html, baseUrl) {
       }
     } catch { }
   });
-  const titulo = meta('meta[property="og:title"]') || ld.headline || textOf(dom.querySelector('h1') || {}) || textOf(dom.querySelector('title') || {}) || null;
-  const autor = meta('meta[name="author"]') || ld.author || ld.personName ||
+  const tituloRaw = meta('meta[property="og:title"]') || ld.headline || textOf(dom.querySelector('h1') || {}) || textOf(dom.querySelector('title') || {}) || null;
+  const oficial = (() => { try { return LIB_CFG.officialDomains.some(d => { const h = new URL(baseUrl).hostname.replace(/^www\./, ''); return h === d || h.endsWith('.' + d); }); } catch { return false; } })();
+  // Quita el nombre del sitio al final del título («… | Luis del Águila», «… - Rendimiento NeuroMuscular»).
+  const titulo = tituloRaw ? tituloRaw.replace(/\s+[|–—-]\s+(Luis del [AÁ]guila|Rendimiento NeuroMuscular)\s*$/i, '').trim() : tituloRaw;
+  const autorRaw = meta('meta[name="author"]') || ld.author || ld.personName ||
     textOf(dom.querySelector('[rel="author"], .author-name, .entry-author, .byline .author, .elementor-post-info__item--type-author') || {}) || null;
+  const autor = oficial && (!autorRaw || /luis del [aá]guila/i.test(autorRaw)) ? 'Luis del Águila' : autorRaw;
   const fecha_pub = meta('meta[property="article:published_time"]') || ld.datePublished ||
     dom.querySelector('time[datetime]')?.getAttribute('datetime') || meta('meta[name="date"]') || null;
   const fecha_mod = meta('meta[property="article:modified_time"]') || ld.dateModified || meta('meta[property="og:updated_time"]') || null;
@@ -3230,6 +3234,7 @@ const AI = {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error?.message || j.error || (r.status === 504 || r.status === 502 ? 'La IA tardó demasiado (límite de 60 s de Netlify)' : 'IA no disponible (' + r.status + ')'));
     const text = (j.content || []).filter(c => c.type === 'text').map(c => c.text).join('');
+    this.lastStop = j.stop_reason || null;
     return text;
   },
   async json(opts) {
@@ -3257,26 +3262,52 @@ REGLAS ESTRICTAS:
 - "tipo": principio | recomendacion | ejemplo | criterio_decision | dato.
   · recomendacion = indicación concreta (qué hacer, cuánto, cuándo). · ejemplo = caso práctico o sesión concreta.
   · criterio_decision = regla "si ocurre X, haz Y". · dato = cifra o hecho fisiológico.
+- Como máximo 12 afirmaciones por bloque: las más relevantes para planificar entrenamiento.
 - Responde SOLO con JSON: {"categorias_doc":[...], "resumen":"2-3 frases", "afirmaciones":[{"chunk_id","categoria","tipo","enunciado","cita"}]}`;
+
+// Recupera las afirmaciones completas de una respuesta cortada (por ejemplo, por límite de tokens).
+function salvageClaims(text) {
+  const out = []; const t = text || '';
+  const start = t.indexOf('"afirmaciones"'); if (start < 0) return null;
+  const re = /\{[^{}]*"chunk_id"[^{}]*\}/g; let m;
+  re.lastIndex = start;
+  while ((m = re.exec(t))) { try { out.push(JSON.parse(m[0])); } catch { } }
+  const res = t.match(/"resumen"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+  return out.length ? { afirmaciones: out, resumen: res ? JSON.parse('"' + res[1] + '"') : '', parcial: true } : null;
+}
 
 async function analyzeDoc(docId, onProgress) {
   const doc = await LDB.get('docs', docId);
   const chunks = (await LDB.byDoc('chunks', docId)).filter(c => c.version === doc.version).sort((a, b) => a.idx - b.idx);
   if (!chunks.length) throw new Error('El documento no tiene texto que analizar');
   const batches = []; let cur = [], len = 0;
-  for (const c of chunks) { if (len + c.texto.length > 8000 && cur.length) { batches.push(cur); cur = []; len = 0; } cur.push(c); len += c.texto.length; }
+  for (const c of chunks) { if (len + c.texto.length > 5000 && cur.length) { batches.push(cur); cur = []; len = 0; } cur.push(c); len += c.texto.length; }
   if (cur.length) batches.push(cur);
   const claims = [], rejected = []; let resumen = ''; const catsDoc = new Set();
-  for (let i = 0; i < batches.length; i++) {
-    onProgress && onProgress(`Analizando bloque ${i + 1}/${batches.length}`);
+  const fallidos = []; let hechos = 0, parciales = 0;
+  // Cola: si un bloque no cabe en la respuesta (o el JSON llega cortado), se parte en dos y se reintenta.
+  const queue = batches.map(b => b);
+  while (queue.length) {
+    const batch = queue.shift();
+    onProgress && onProgress(`Analizando bloque ${hechos + 1}/${hechos + queue.length + 1}`);
     const user = `PUBLICACIÓN: "${doc.titulo}" — ${doc.autor || 'autor desconocido'} — ${doc.fecha_pub || 'fecha desconocida'}\n` +
       `ESTADO DE EXTRACCIÓN: ${doc.estado}${doc.estado !== 'ok' ? ' (' + doc.nota_completitud + ')' : ''}\n\nFRAGMENTOS:\n` +
-      batches[i].map(c => `[${c.id}] ${c.encabezado ? '(' + c.encabezado + ') ' : ''}${c.texto}`).join('\n\n');
-    const r = await AI.json({ system: ANALYSIS_SYSTEM, user, max_tokens: 4000 });
+      batch.map(c => `[${c.id}] ${c.encabezado ? '(' + c.encabezado + ') ' : ''}${c.texto}`).join('\n\n');
+    let r = null, text = '';
+    try { text = await AI.call({ system: ANALYSIS_SYSTEM, user, max_tokens: 4000 }); } catch (e) { fallidos.push(e.message); hechos++; continue; }
+    const cortado = AI.lastStop === 'max_tokens';
+    if (!cortado) { try { r = parseJsonLoose(text); } catch { } }
+    if (!r) {
+      if (batch.length > 1) { const h = Math.ceil(batch.length / 2); queue.unshift(batch.slice(0, h), batch.slice(h)); continue; }
+      r = salvageClaims(text);
+      if (!r) { fallidos.push(cortado ? 'respuesta cortada por longitud' : 'JSON no válido'); hechos++; continue; }
+      parciales++;
+    }
+    hechos++;
     (r.categorias_doc || []).forEach(k => LIB_CATS[k] && catsDoc.add(k));
     if (!resumen && r.resumen) resumen = r.resumen;
     for (const a of (r.afirmaciones || [])) {
-      const ch = batches[i].find(c => c.id === a.chunk_id) || chunks.find(c => c.id === a.chunk_id);
+      const ch = batch.find(c => c.id === a.chunk_id) || chunks.find(c => c.id === a.chunk_id);
       const ok = ch && a.cita && quoteInText(a.cita, ch.texto) && TXT.words(a.cita) <= 60;
       const item = {
         id: libId('af'), docId, version: doc.version, chunkId: ch ? ch.id : null,
@@ -3288,14 +3319,15 @@ async function analyzeDoc(docId, onProgress) {
       (ok ? claims : rejected).push(item);
     }
   }
+  if (fallidos.length && fallidos.length === hechos) throw new Error('La IA no pudo analizar ningún bloque: ' + [...new Set(fallidos)].join('; '));
   // sustituye afirmaciones vigentes anteriores de este documento
   const old = await LDB.byDoc('claims', docId);
   await LDB.putMany('claims', old.filter(c => c.vigente).map(c => ({ ...c, vigente: false })));
   await LDB.putMany('claims', claims);
-  const updated = { ...doc, analisis: { fecha: new Date().toISOString(), version_doc: doc.version, resumen, n_afirmaciones: claims.length, n_descartadas: rejected.length, descartadas: rejected.slice(0, 20).map(r => ({ enunciado: r.enunciado, cita: r.cita })) } };
+  const updated = { ...doc, analisis: { fecha: new Date().toISOString(), version_doc: doc.version, resumen, n_afirmaciones: claims.length, n_descartadas: rejected.length, bloques_fallidos: fallidos.length, bloques_parciales: parciales, descartadas: rejected.slice(0, 20).map(r => ({ enunciado: r.enunciado, cita: r.cita })) } };
   if (catsDoc.size) updated.categorias_ia = [...catsDoc];
   await LDB.put('docs', updated);
-  await libLog('analisis', `Analizado ${doc.titulo}: ${claims.length} afirmaciones con cita verificada, ${rejected.length} descartadas por cita no literal`, { docId });
+  await libLog('analisis', `Analizado ${doc.titulo}: ${claims.length} afirmaciones con cita verificada, ${rejected.length} descartadas por cita no literal${fallidos.length ? `; ${fallidos.length} bloque(s) sin analizar (${[...new Set(fallidos)].join('; ')})` : ''}${parciales ? `; ${parciales} bloque(s) con respuesta cortada, se conservan las afirmaciones completas` : ''}`, { docId });
   return { claims, rejected, doc: updated };
 }
 
@@ -3727,6 +3759,11 @@ function libQueueUrlsFromInput() {
   libAddUrls(urls);
 }
 async function libAddUrls(urls) {
+  if (LIBUI.importing) return toast('Ya hay una importación en marcha: espera a que termine');
+  LIBUI.importing = true;
+  try { await libAddUrlsRun([...new Set(urls)]); } finally { LIBUI.importing = false; }
+}
+async function libAddUrlsRun(urls) {
   const st = document.getElementById('lib-add-log'); st.innerHTML = '';
   const line = (h) => { st.insertAdjacentHTML('beforeend', `<div class="lib-log-line">${h}</div>`); };
   for (const url of urls) {
