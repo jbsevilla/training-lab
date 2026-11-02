@@ -364,6 +364,15 @@
     .ui-toolbar .form-input{flex:1;min-width:0}
     table{font-size:12px}th,td{padding:8px 10px}
   }
+
+/* Mi semana y dictado por voz */
+.voz-btn{white-space:nowrap}
+.voz-btn.voz-on{background:#b91c1c;border-color:#b91c1c;color:#fff;animation:vozp 1.2s ease-in-out infinite}
+@keyframes vozp{50%{opacity:.75}}
+.chat-input .voz-chat{align-self:stretch}
+.miwk-t td{vertical-align:top;font-size:12.5px}
+.miwk-t .miwk-n{width:64px;padding:4px}
+@media (max-width:700px){.voz-l{display:none}#miwk-body .grid-2{grid-template-columns:1fr!important}.miwk-t th:nth-child(6),.miwk-t td:nth-child(6){display:none}}
 </style>
 </head>
 <body>
@@ -5070,6 +5079,8 @@ const paceRange = v => { if (!v) return null; const p = String(v).split(/\s*[-�
 const DIST = { maraton: { taper: 2, spec: 8, rec: 4, label: 'Maratón' }, media: { taper: 1, spec: 6, rec: 1, label: 'Media maratón' }, '15k': { taper: 1, spec: 6, rec: 1, label: '15K' }, '10k': { taper: 1, spec: 6, rec: 1, label: '10K' }, otro: { taper: 1, spec: 4, rec: 1, label: 'Otra' } };
 const FASES = { base: 'Base aeróbica', desarrollo: 'Desarrollo (umbral)', especifico: 'Específico', taper: 'Puesta a punto', recuperacion: 'Recuperación', transicion: 'Transición' };
 
+const ESTR_ROLES = { '': 'Automático', descanso: 'Descanso', rodaje: 'Rodaje suave', calidad_corta: 'Calidad corta', calidad: 'Calidad principal', largo: 'Tirada larga' };
+const CAL_FORMATOS = [['Controlado (continuo)', 0], ['Miles (series de 1 km)', 1], ['Bloques (2×5-6 km)', 2], ['Combinado (series + controlado)', 3]];
 const PLANNER = {
   // ---------- Volumen de partida: continuidad reciente (C1) ----------
   recentVolume(endDate) {
@@ -5150,8 +5161,43 @@ const PLANNER = {
     if (runDays.length > contDays) { notas.push(`Días de carrera limitados a ${contDays} por continuidad reciente (${opts.recent.dias} días/semana de media; se sube de uno en uno, A-DESC).`); reglas.add('A-DESC'); }
     const nDays = Math.min(runDays.length, contDays, week.tipo === 'recuperacion' && week.idx_bloque < 2 ? 3 : 7);
     const slots = Array(7).fill(null);
-    const longDay = runDays.includes(atleta.disponibilidad.dia_largo.v) ? atleta.disponibilidad.dia_largo.v : runDays.filter(d => d >= 4).at(-1) ?? runDays.at(-1);
+    let longDayFixed = null;
+    const longDay0 = runDays.includes(atleta.disponibilidad.dia_largo.v) ? atleta.disponibilidad.dia_largo.v : runDays.filter(d => d >= 4).at(-1) ?? runDays.at(-1);
+    let longDay = longDay0;
     const isRace = !!week.competicion; const raceDay = isRace ? (new Date(week.competicion).getUTCDay() + 6) % 7 : null;
+    const estr = atleta.disponibilidad.estructura;
+    const fixedMode = Array.isArray(estr) && estr.some(Boolean);
+    if (fixedMode) {
+      // Estructura fija declarada por el deportista: se respeta día a día. Sólo se cambia lo que obligan
+      // las semanas de descarga, el taper, la competición o la asimilación, y cada cambio queda anotado.
+      const ROLE = { rodaje: 'rodaje', calidad_corta: 'calidad2', calidad: 'calidad', largo: 'largo' };
+      notas.push('Estructura semanal fija declarada en tu perfil.');
+      for (let d = 0; d < 7; d++) {
+        const role = estr[d] || (disp[d].correr ? 'rodaje' : 'descanso');
+        if (role === 'descanso') continue;
+        if (!disp[d].correr) { notas.push(`${DIAS[d]}: tu estructura pone ${ESTR_ROLES[role]?.toLowerCase() || role}, pero en disponibilidad ese día no puedes correr: descanso.`); continue; }
+        slots[d] = ROLE[role] || 'rodaje';
+      }
+      runDays = runDays.filter(d => slots[d]);
+      const ld = estr.indexOf('largo'); if (ld >= 0) longDayFixed = ld;
+      const toRod = (d, why) => { notas.push(`${DIAS[d]}: ${why}`); slots[d] = 'rodaje'; };
+      if (week.tipo === 'recuperacion') {
+        slots.forEach((x, d) => { if (x === 'calidad' || x === 'calidad2') toRod(d, 'semana de descarga: la calidad pasa a rodaje suave (A-DESC).'); });
+        if (week.idx_bloque < 2) slots.forEach((x, d) => { if (x === 'largo') toRod(d, 'semana de descarga: sin tirada larga, rodaje suave.'); });
+        reglas.add('A-DESC');
+      }
+      if (week.tipo === 'taper') slots.forEach((x, d) => { if (x === 'calidad2') toRod(d, 'taper: una sola sesión de calidad (A-TAPER).'); });
+      if (isRace) {
+        slots.forEach((x, d) => { if (d === raceDay) return; if ((x === 'calidad' || x === 'calidad2') && (d > raceDay - 3 || (x === 'calidad2' && d > raceDay - 5))) toRod(d, 'demasiado cerca de la competición para una sesión exigente.'); if (x === 'largo') { slots[d] = d > raceDay ? null : 'rodaje'; notas.push(`${DIAS[d]}: semana de competición, sin tirada larga.`); } });
+        slots[raceDay] = 'competicion';
+      }
+      if (week.tipo !== 'recuperacion' && week.tipo !== 'taper' && (opts.nCalidad ?? 2) < 2) slots.forEach((x, d) => { if (x === 'calidad2') { toRod(d, 'la revisión ha bajado a una sola calidad semanal hasta que se asimile (D14).'); reglas.add('D14'); } });
+      // avisos, sin mover nada: lo decide el deportista
+      const hardD = [0, 1, 2, 3, 4, 5, 6].filter(d => ['calidad', 'calidad2', 'competicion'].includes(slots[d]));
+      hardD.forEach(d => { const nx = (d + 1) % 7; if (hardD.includes(nx)) notas.push(`Aviso: ${DIAS[d]} y ${DIAS[nx]} son exigentes y seguidos. Lo mantengo porque es tu estructura, pero conviene separarlos.`); if (slots[nx] === 'largo') notas.push(`Aviso: la calidad del ${DIAS[d].toLowerCase()} es la víspera de la tirada larga.`); });
+      if (hardD.length >= 2) { const gaps = hardD.map((d, i) => ((hardD[(i + 1) % hardD.length] - d + 7) % 7) || 7); if (Math.min(...gaps) < 4) { notas.push('Entre tus dos calidades hay menos de 4 días: A-45 recomienda 5-7 días para recuperar una sesión dura. La segunda se mantiene corta (C3).'); reglas.add('A-45'); } }
+      if (longDayFixed != null) longDay = longDayFixed;
+    } else {
     if (isRace) slots[raceDay] = 'competicion'; else if (week.tipo !== 'recuperacion' || week.idx_bloque >= 2) slots[longDay] = 'largo';
     // calidad
     const nQ = week.tipo === 'recuperacion' ? (week.idx_bloque >= 2 ? 0 : 0) : week.tipo === 'taper' ? 1 : opts.nCalidad;
@@ -5185,6 +5231,7 @@ const PLANNER = {
         const k = [0, 1, 2, 3].map(k => i + k).find(x => slots[x] === 'rodaje');
         if (k != null) { slots[k] = null; notas.push(`${DIAS[k]}: descanso para no encadenar más de 3 días de carrera (A-DESC).`); reglas.add('A-DESC'); }
       }
+    }
     }
     // ---- bici y combinadas (Prompt 7) ----
     const bikeSlots = Array(7).fill(null);
@@ -5296,9 +5343,13 @@ const PLANNER = {
         () => ({ titulo: 'Subumbral corto (series de 1 km)', principal: `${6 + Math.min(2, prog)}×1 km a ${tag(-10, -10)} con 3 min de trote muy suave`, ritmo: tag(-10, -10), reps: 6 + Math.min(2, prog), recuperaciones: '3 min trote muy suave', fc: lt2 ? `sin superar ${lt2} ppm` : 'sin superar la FC de umbral', km: 6 + Math.min(2, prog) }),
         () => ({ titulo: 'Subumbral en bloques', principal: `2×${prog >= 2 ? 6 : 5} km a ${tag(5, 15)} con 3 min de recuperación`, ritmo: tag(5, 15), reps: 2, recuperaciones: '3 min trote', fc: lt2 ? `${lt2 - 10}-${lt2 - 5} ppm` : 'FC umbral −5 a −10', km: prog >= 2 ? 12 : 10 })
       ];
-      if (ctx.repetir) f = ctx.repetir; // repetir estímulo
-      const v = variants[(f ?? n) % 3]();
-      return { ...base, tipo: 'subumbral', ...v, formato: (f ?? n) % 3, objetivo: 'Umbral: adaptación aeróbica sostenible (podrías haber hecho 1-2 series más)', calentamiento: '15-20 min progresivos + 2-3 progresiones cortas', fc_limite: v.fc, vuelta_calma: '10 min trote muy suave + estiramientos', duracion_min: min,
+      variants.push(() => ({ titulo: 'Combinado: series + controlado', principal: `${4 + Math.min(2, prog)}×1 km a ${tag(-10, -10)} con 2 min de trote + 3 min + ${4 + Math.min(2, prog)} km controlado a ${tag(5, 15)}`, ritmo: `${tag(-10, -10)} y ${tag(5, 15)}`, reps: 4 + Math.min(2, prog) + 1, recuperaciones: '2 min trote entre series; 3 min antes del controlado', fc: lt2 ? `sin superar ${lt2} ppm` : 'sin superar la FC de umbral', km: 2 * (4 + Math.min(2, prog)) }));
+      // formatos elegidos por el deportista para la calidad principal (por defecto: controlado, miles y bloques)
+      const allowed = (ctx.formatos && ctx.formatos.length ? ctx.formatos : [0, 1, 2]).filter(x => variants[x]);
+      if (ctx.repetir != null && ctx.repetir !== true) f = ctx.repetir; // repetir estímulo
+      const fi = f != null && allowed.includes(f) ? f : allowed[(n || 0) % allowed.length];
+      const v = variants[fi]();
+      return { ...base, tipo: 'subumbral', ...v, formato: fi, objetivo: 'Umbral: adaptación aeróbica sostenible (podrías haber hecho 1-2 series más)', calentamiento: '15-20 min progresivos + 2-3 progresiones cortas', fc_limite: v.fc, vuelta_calma: '10 min trote muy suave + estiramientos', duracion_min: min,
         criterios: ['Sensación final: podrías haber hecho una o dos series más; si acabas vaciado, te has pasado de ritmo.', 'Si el último km pierde ritmo o sube mucho la FC: baja intensidad o quita una repetición.', 'Mismo ritmo durante todo el bloque: se progresa en volumen (A-PROG).'],
         reglas: ['A-RIT', 'A-PROG', 'C6', 'C4'], plan_motor: { tipo: 'subumbral', reps: v.reps, ritmo_min: v.ritmo.split('-')[0], ritmo_max: v.ritmo.split('-')[1]?.replace('/km', ''), fc_techo: lt2, duracion_min: min } };
     }
@@ -5349,7 +5400,7 @@ const PLANNER = {
       let min = s === 'largo' ? longMin : s === 'rodaje' ? Math.min(rodMin, disp[i].max_min || rodMin) : fixed[s];
       if (s === 'largo') min = Math.min(min, disp[i].max_min || min);
       const kind = s === 'rodaje' && wk.tipo === 'recuperacion' ? 'recuperacion' : s;
-      const ses = opts.testDay === i && s === 'calidad' ? this.session('test', { p, week: wk }) : this.session(kind, { p, week: wk, min, n: opts.n, goal, repetir: opts.repetir });
+      const ses = opts.testDay === i && s === 'calidad' ? this.session('test', { p, week: wk }) : this.session(kind, { p, week: wk, min, n: opts.n, goal, repetir: opts.repetir, formatos: atleta.disponibilidad.formatos });
       if (ses) sessions.push({ id: libId('ses'), fecha: iso(addDays(wk.inicio, i)), dia: i, ...ses });
     });
     // combinada
@@ -5737,6 +5788,13 @@ function renderAtleta() {
     ${[['correr', 'Correr'], ['bici', 'Bici'], ['fuerza', 'Fuerza'], ['club', 'Calidad con el club']].map(([k, l]) => `<tr><td>${l}</td>${a.disponibilidad.dias.map((d, i) => `<td><input type="checkbox" data-disp="${i}.${k}" ${d[k] ? 'checked' : ''}></td>`).join('')}</tr>`).join('')}
     <tr><td>Máx. min carrera</td>${a.disponibilidad.dias.map((d, i) => `<td><input class="form-input" style="width:64px;padding:4px" type="number" data-disp="${i}.max_min" value="${d.max_min}"></td>`).join('')}</tr>
     <tr><td>Máx. min bici</td>${a.disponibilidad.dias.map((d, i) => `<td><input class="form-input" style="width:64px;padding:4px" type="number" data-disp="${i}.bici_max_min" value="${d.bici_max_min || 0}"></td>`).join('')}</tr></tbody></table></div>
+    <div class="card-title" style="margin-top:14px">Estructura semanal fija</div>
+    <div class="text-muted" style="font-size:12px;margin-bottom:6px">Elige qué toca cada día y el plan la respeta. Sólo la cambia en semanas de descarga, en el taper, en la semana de competición o si la revisión baja a una calidad, y siempre te dice por qué. Deja todo en «Automático» para que el plan reparta las sesiones. En modo fijo, un día en «Automático» es rodaje si ese día puedes correr y descanso si no.</div>
+    <div class="table-wrap"><table><thead><tr>${DIAS.map(d => `<th>${d.slice(0, 3)}</th>`).join('')}</tr></thead><tbody><tr>
+    ${DIAS.map((d, i) => `<td><select class="form-input" style="padding:4px;min-width:110px" data-estr="${i}">${Object.entries(ESTR_ROLES).map(([k, l]) => `<option value="${k}" ${((a.disponibilidad.estructura || [])[i] || '') === k ? 'selected' : ''}>${l}</option>`).join('')}</select></td>`).join('')}
+    </tr></tbody></table></div>
+    <div class="form-label" style="margin-top:8px">Formatos para la calidad principal (se van alternando)</div>
+    <div class="flex gap-8" style="flex-wrap:wrap">${CAL_FORMATOS.map(([l, k]) => `<label class="lib-log-line"><input type="checkbox" data-fmt="${k}" ${(a.disponibilidad.formatos || [0, 1, 2]).includes(k) ? 'checked' : ''}> ${l}</label>`).join('')}</div>
     <div class="grid-3" style="margin-top:8px">${fld('disponibilidad.dias_carrera_max', 'Días de carrera máx.', 'number')}
       <div class="form-group"><label class="form-label">Día de la tirada larga ${EST(a.disponibilidad.dia_largo.estado)}</label><select class="form-input" data-path="disponibilidad.dia_largo" data-num="1">${DIAS.map((d, i) => `<option value="${i}" ${a.disponibilidad.dia_largo.v === i ? 'selected' : ''}>${d}</option>`).join('')}</select></div>
       <label class="lib-log-line" style="align-self:center"><input type="checkbox" ${a.disponibilidad.estado === 'confirmado' ? 'checked' : ''} onchange="atSetEstado('disponibilidad',this.checked)"> Disponibilidad confirmada</label></div></div>
@@ -5766,6 +5824,13 @@ function atCollect() {
   document.querySelectorAll('#atleta-body [data-est]').forEach(el => { const ks = el.dataset.est.split('.'); let o = a; ks.forEach(k => o = o[k]); if (o.v != null) o.estado = el.value; });
   document.querySelectorAll('#atleta-body [data-obj]').forEach(el => { const [i, k] = el.dataset.obj.split('.'); a.objetivos[i][k] = el.value || null; if (k === 'fecha') a.objetivos[i].estado = el.value ? 'confirmado' : 'pendiente'; });
   document.querySelectorAll('#atleta-body [data-disp]').forEach(el => { const [i, k] = el.dataset.disp.split('.'); a.disponibilidad.dias[i][k] = el.type === 'checkbox' ? el.checked : +el.value || 0; });
+  const estr = [...document.querySelectorAll('#atleta-body [data-estr]')].sort((x, y) => x.dataset.estr - y.dataset.estr).map(el => el.value || null);
+  if (estr.length === 7) {
+    a.disponibilidad.estructura = estr.some(Boolean) ? estr : null;
+    const ld = estr.indexOf('largo'); if (ld >= 0) a.disponibilidad.dia_largo = { v: ld, estado: 'confirmado', fuente: 'estructura semanal fija' };
+  }
+  const fm = [...document.querySelectorAll('#atleta-body [data-fmt]')].filter(el => el.checked).map(el => +el.dataset.fmt);
+  if (document.querySelector('#atleta-body [data-fmt]')) a.disponibilidad.formatos = fm.length ? fm : [0, 1, 2];
   const mat = document.getElementById('at-material').value.split('\n').map(s => s.trim()).filter(Boolean); a.material.items = mat;
   document.querySelectorAll('#atleta-body [data-mat]').forEach(el => { a.material.catalogo[el.dataset.mat].tiene = el.checked; });
   document.querySelectorAll('#atleta-body [data-matdet]').forEach(el => { a.material.catalogo[el.dataset.matdet].detalle = el.value.trim(); });
@@ -5775,7 +5840,10 @@ function atCollect() {
   a.preferencias.restricciones = document.getElementById('at-restr').value.split('\n').map(s => s.trim()).filter(Boolean);
   return a;
 }
-function atSave() { const a = atCollect(); ATLETA.save(a); PLAN.addLog({ tipo: 'perfil', decision: 'perfil actualizado', motivo: 'Edición manual del perfil', confianza: 'declarado' }); toast('Perfil guardado. Si cambian objetivos o disponibilidad, regenera el plan.', 4000); renderAtleta(); }
+function atSave() {
+  const ls = [...document.querySelectorAll('#atleta-body [data-estr]')].filter(el => el.value === 'largo');
+  if (ls.length > 1) return toast('La estructura tiene más de una tirada larga: deja sólo un día.', 4000);
+  const a = atCollect(); ATLETA.save(a); PLAN.addLog({ tipo: 'perfil', decision: 'perfil actualizado', motivo: 'Edición manual del perfil', confianza: 'declarado' }); toast('Perfil guardado. Si cambian objetivos o disponibilidad, regenera el plan.', 4000); renderAtleta(); }
 function atAddPeso() { const a = atCollect(); const kg = +document.getElementById('at-peso-kg').value; if (!kg) return; a.peso.historial.push({ fecha: document.getElementById('at-peso-f').value || null, kg }); a.peso.historial.sort((x, y) => (x.fecha || '').localeCompare(y.fecha || '')); ATLETA.save(a); renderAtleta(); }
 function atAddObj() { const a = atCollect(); a.objetivos.push({ id: libId('g'), nombre: 'Nuevo objetivo', fecha: null, distancia: '10k', objetivo: '', prioridad: 'B', estado: 'pendiente', falta: 'fecha' }); ATLETA.save(a); renderAtleta(); }
 function atDelObj(i) { const a = atCollect(); a.objetivos.splice(i, 1); ATLETA.save(a); renderAtleta(); }
@@ -7944,8 +8012,10 @@ const ASIM = {
     if (!ENG.zones('carrera').completo) falta.push('LT1 y LT2 de carrera (para zonas y deriva por zonas).');
     const solidez = this.strength(I, fis);
     const decision = this.decide(estado, I, { pos, neg, seg, end });
-    if (I.objetivo.estado === 'riesgo' && !seg.activo && ['MANTENER', 'PROGRESAR', 'CONSOLIDAR'].includes(decision.tipo)) {
-      Object.assign(decision, { tipo: 'REEVALUAR', desc: ASIM_DEC.REEVALUAR, justifican: [...I.objetivo.hechos, ...decision.justifican].slice(0, 5), cambios: ['Revisar el objetivo del maratón (o la estrategia: ritmo muy conservador, caminar por tramos o no correrlo) antes de seguir.', 'Mientras tanto, seguir el plan sin acelerar la progresión: subir carga de golpe para llegar aumenta el riesgo de lesión (C9, A-VOLINT).', 'Si faltan actividades por importar, impórtalas: la valoración cambia.'], reglas: [...new Set(['D16', 'C9', 'C1', ...decision.reglas])], conflicto: 'Cambiar el objetivo es tu decisión: la plataforma sólo lo propone.' });
+    if (I.objetivo.estado === 'riesgo' && !seg.activo && ['MANTENER', 'PROGRESAR', 'CONSOLIDAR', 'REEVALUAR'].includes(decision.tipo)) {
+      // si ya había que reevaluar por otro motivo (p. ej. test caducado), se conserva ese cambio además del aviso del objetivo
+      const otros = decision.tipo === 'REEVALUAR' ? decision.cambios.filter(c => !/^Por lo demás/.test(c)) : [];
+      Object.assign(decision, { tipo: 'REEVALUAR', desc: ASIM_DEC.REEVALUAR, justifican: [...I.objetivo.hechos, ...decision.justifican].slice(0, 5), cambios: ['Revisar el objetivo del maratón (o la estrategia: ritmo muy conservador, caminar por tramos o no correrlo) antes de seguir.', 'Mientras tanto, seguir el plan sin acelerar la progresión: subir carga de golpe para llegar aumenta el riesgo de lesión (C9, A-VOLINT).', ...otros, 'Si faltan actividades por importar, impórtalas: la valoración cambia.'], reglas: [...new Set(['D16', 'C9', 'C1', ...decision.reglas])], conflicto: 'Cambiar el objetivo es tu decisión: la plataforma sólo lo propone.' });
     }
     const prev = this.history().filter(h => h.fecha < iso(end)).at(-1) || null;
     const seguimiento = prev ? this.followUp(prev, I, end) : null;
@@ -8304,6 +8374,333 @@ function renderInforme() {
   CH.draw('inf-6m', { type: 'bar', x: m6, xfmt: v => `${MESES[+v.slice(5, 7) - 1].slice(0, 3)} ${v.slice(2, 4)}`, series: [{ name: 'EF mediana de rodajes', data: m6.map(ym => { const [y, m] = ym.split('-').map(Number); const ini = `${ym}-01`, fin = iso(new Date(y, m, 0, 12)); return ASIM.med(getActivities().filter(a => { const x = a.fecha.slice(0, 10); return x >= ini && x <= fin && a.tipo === 'carrera'; }).map(a => ({ a, A: ENG.analyze(a) })).filter(x => ASIM_EASY.includes(x.A.tipo) && x.A.segmento?.ok && !ASIM.comparable(x.a, x.A).length).map(x => x.A.segmento.ef)); }), color: '#22c55e' }], y: { fmt: v => v.toFixed(2) }, height: 170, empty: 'Sin rodajes comparables en 6 meses.' });
 }
 UI.views.informe = renderInforme; UI.titles.informe = 'Informe mensual';
+
+// ============================================================
+// MI SEMANA — tú planificas (por voz o por texto). La IA sólo pasa lo que dices a sesiones;
+// el entrenador revisa y avisa con las reglas, pero no decide ni cambia nada sin tu confirmación.
+// ============================================================
+Object.assign(FASES, { manual: 'Plan propio' });
+Object.assign(FASE_COLOR, { manual: '#0e7490' });
+
+// ---------- Voz (reconocimiento del navegador: Chrome y Safari) ----------
+const VOZ = {
+  SR: (typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)) || null,
+  ok() { return !!this.SR; },
+  rec: null, want: false, btn: null,
+  btnHtml(taId, extraCls = '') {
+    if (!this.ok()) return '';
+    return `<button type="button" class="btn btn-secondary voz-btn ${extraCls}" aria-pressed="false" title="Dictar por voz" onclick="VOZ.toggle('${taId}', this)">🎤<span class="voz-l"> Dictar</span></button>`;
+  },
+  toggle(taId, btn) {
+    if (this.want) return this.stop();
+    const ta = document.getElementById(taId); if (!ta) return;
+    this.want = true; this.btn = btn;
+    let base = ta.value.trim() ? ta.value.trim() + ' ' : '';
+    const start = () => {
+      const r = new this.SR(); this.rec = r;
+      r.lang = 'es-ES'; r.continuous = true; r.interimResults = true;
+      r.onresult = e => {
+        let fin = '', tmp = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) { const t = e.results[i][0].transcript; if (e.results[i].isFinal) fin += t; else tmp += t; }
+        if (fin) base = (base + fin.trim() + ' ').replace(/\s+/g, ' ');
+        ta.value = base + tmp; ta.dispatchEvent(new Event('input'));
+      };
+      r.onerror = e => {
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') { toast('El navegador no tiene permiso para usar el micrófono. Actívalo en la barra de direcciones (icono del candado).', 6000); this.want = false; }
+        else if (e.error === 'audio-capture') { toast('No se detecta ningún micrófono.', 5000); this.want = false; }
+        else if (e.error === 'network') { toast('El reconocimiento de voz necesita conexión a internet.', 5000); this.want = false; }
+      };
+      r.onend = () => { if (this.want) { try { start(); } catch { this.stop(); } } else this.paint(false); }; // Safari corta tras una pausa: se reanuda hasta que pulses parar
+      r.start();
+    };
+    try { start(); this.paint(true); } catch (e) { this.want = false; toast('No se pudo iniciar el dictado: ' + e.message, 5000); }
+  },
+  stop() { this.want = false; try { this.rec?.stop(); } catch { } this.paint(false); },
+  paint(on) {
+    const b = this.btn; if (!b || !b.isConnected) return;
+    b.classList.toggle('voz-on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    b.innerHTML = on ? '■<span class="voz-l"> Parar</span>' : '🎤<span class="voz-l"> Dictar</span>';
+  }
+};
+
+// ---------- Interpretación ----------
+const MIWK_TIPOS = ['rodaje', 'recuperacion', 'tirada_larga', 'series', 'subumbral', 'umbral', 'test', 'competicion', 'fuerza', 'bici_suave', 'bici_calidad', 'otro'];
+const MIWK_HARD = ['series', 'subumbral', 'umbral', 'test', 'competicion', 'bici_umbral'];
+const MIWK_SYSTEM = `Eres el asistente de planificación de un corredor que es su propio entrenador. Tu único trabajo es pasar a estructura la semana que él dicta (a menudo por voz, con números hablados).
+REGLAS:
+- Transcribe SOLO lo que dice. No añadas sesiones, no cambies cargas, no "mejores" el plan, no des consejos.
+- Los días que no menciona no se incluyen (son descanso). Si dice "descanso" un día, tampoco lo incluyas.
+- Números hablados: "cinco por mil" = 5×1000 m; "cuatro veinte" = 4:20/km; "hora y media" = 90 min; "dos por cinco kilómetros" = 2×5 km; "rodaje de cincuenta" = 50 min.
+- No inventes ritmos ni pulsos: si no los dice, déjalos en null. Si dice "a ritmo de umbral/maratón/10K/rodaje", usa "ritmo_ref".
+- "controlado" es umbral/subumbral continuo: tipo "subumbral" salvo que diga "a umbral" (tipo "umbral"). "miles" o "series" = "series". "largo"/"tirada larga" = "tirada_larga".
+- Si algo es ambiguo o falta un dato importante, NO lo supongas: escríbelo en "dudas" (frases cortas en español).
+- Si se te da una SEMANA ACTUAL y una CORRECCIÓN, devuelve la semana completa con la corrección aplicada y el resto igual.
+- "descripcion": la parte principal tal como la dijo, en limpio (p. ej. "5×1000 a 4:20 con 2 min de trote").
+Responde SOLO con JSON:
+{"semana":"actual|siguiente|null","sesiones":[{"dia":0-6 (0=lunes),"deporte":"carrera|bici|fuerza|otro","tipo":"${MIWK_TIPOS.join('|')}","titulo":"corto","descripcion":"...","duracion_min":n|null,"distancia_km":n|null,"reps":n|null,"distancia_rep_m":n|null,"duracion_rep_min":n|null,"recuperacion":"texto"|null,"ritmo":"m:ss" o "m:ss-m:ss"|null,"ritmo_ref":"umbral|maraton|10k|rodaje"|null,"fc_techo":n|null}],"dudas":["..."]}`;
+
+const MIWK = {
+  st: null, // estado del editor: { ini, texto, sesiones, dudas, avisos, busy }
+  weeks() { const m = mondayOf(UI.today()); return [0, 1, 2, 3].map(i => iso(addDays(m, 7 * i))); },
+  defaultWeek(text = '') {
+    const [cur, next] = this.weeks(); const t = text.toLowerCase();
+    if (/semana que viene|pr[oó]xima semana|siguiente semana/.test(t)) return next;
+    if (/esta semana/.test(t)) return cur;
+    return UI.today().getDay() === 0 || UI.today().getDay() === 6 ? next : cur;
+  },
+  context(ini) {
+    const a = ATLETA.ensure(); const r = a.ritmos_ref || {};
+    const dias = DIAS.map((d, i) => `${i}=${d} ${iso(addDays(ini, i))}`).join(', ');
+    return `HOY: ${UI.isoToday()}. SEMANA ELEGIDA (lunes ${ini}): ${dias}.\nRitmos de referencia del perfil (sólo para entender "ritmo de umbral", etc.; no los apliques si no los nombra): umbral ${r.umbral?.v || '—'}, rodaje ${r.rodaje?.v || '—'}, maratón ${r.maraton?.v || '—'}, 10K ${r.diezk?.v || '—'}.`;
+  },
+  async interpret(text, ini, draft = null) {
+    const user = this.context(ini) + '\n\n' + (draft ? `SEMANA ACTUAL (JSON):\n${JSON.stringify({ sesiones: draft.map(s => s._src) })}\n\nCORRECCIÓN DICTADA:\n${text}` : `SEMANA DICTADA:\n${text}`);
+    const raw = await AI.call({ system: MIWK_SYSTEM, user, max_tokens: 3000, temperature: 0 });
+    const j = parseJsonLoose(raw);
+    const a = ATLETA.ensure();
+    const ses = (Array.isArray(j.sesiones) ? j.sesiones : []).filter(x => Number.isInteger(+x.dia) && +x.dia >= 0 && +x.dia <= 6).map(x => this.toSession({ ...x, dia: +x.dia }, ini, a));
+    ses.sort((x, y) => x.dia - y.dia);
+    return { sesiones: ses, dudas: (j.dudas || []).filter(d => typeof d === 'string').slice(0, 8), semana: j.semana };
+  },
+  toSession(x, ini, a) {
+    const p = PLANNER.paces(a); const S = secToPace;
+    const tipoIn = MIWK_TIPOS.includes(x.tipo) ? x.tipo : 'otro';
+    const deporte = x.deporte === 'bici' || /^bici/.test(tipoIn) ? 'ciclismo' : x.deporte === 'fuerza' || tipoIn === 'fuerza' ? 'fuerza' : x.deporte === 'otro' || tipoIn === 'otro' ? 'otro' : 'carrera';
+    const tipo = deporte === 'ciclismo' ? (tipoIn === 'bici_calidad' ? 'bici_umbral' : 'bici_base') : deporte === 'fuerza' ? 'fuerza' : deporte === 'otro' ? 'otro' : (['bici_suave', 'bici_calidad', 'fuerza', 'otro'].includes(tipoIn) ? 'rodaje' : tipoIn);
+    const hard = MIWK_HARD.includes(tipo);
+    // ritmo: el dictado manda; si sólo dice "a ritmo de X", se toma de tu perfil y se indica
+    let rmin = null, rmax = null, rOrigen = null;
+    const rr = x.ritmo ? paceRange(x.ritmo) : null;
+    if (rr && rr.min) { rmin = rr.min; rmax = rr.max; rOrigen = 'dictado'; }
+    else if (x.ritmo_ref === 'umbral' && p.umbral) { rmin = rmax = p.umbral; rOrigen = 'umbral del perfil'; }
+    else if (x.ritmo_ref === '10k' && p.diezk) { rmin = rmax = p.diezk; rOrigen = '10K del perfil'; }
+    else if (x.ritmo_ref === 'maraton' && p.maraton) { rmin = p.maraton.min; rmax = p.maraton.max; rOrigen = 'maratón del perfil'; }
+    else if (x.ritmo_ref === 'rodaje' && p.rodaje) { rmin = p.rodaje.min; rmax = p.rodaje.max; rOrigen = 'rodaje del perfil'; }
+    const lo = rmin != null && rmax != null ? Math.min(rmin, rmax) : rmin, hi = rmin != null && rmax != null ? Math.max(rmin, rmax) : rmax;
+    const ritmoTxt = lo != null ? (lo === hi ? `${S(lo)}/km` : `${S(lo)}-${S(hi)}/km`) + (rOrigen && rOrigen !== 'dictado' ? ` (${rOrigen})` : '') : null;
+    // techo de pulso: el que digas; si no, el de tus zonas (LT1 en suave, LT2 en calidad), indicado como tal
+    const fcT = +x.fc_techo || (deporte === 'carrera' ? (hard ? p.lt2 : p.lt1) : null) || null;
+    const fcTxt = x.fc_techo ? `≤ ${x.fc_techo} ppm (dictado)` : fcT ? `≤ ${fcT} ppm (${hard ? 'LT2' : 'LT1'} de tu perfil)` : '—';
+    // duración: la dictada; si no, estimada con distancia y ritmo
+    let dur = +x.duracion_min || null, est = false;
+    if (!dur && deporte === 'carrera') {
+      const pace = lo || (hard ? p.umbral : p.rodaje?.min) || null;
+      const recMin = (() => { const m = String(x.recuperacion || '').match(/(\d+(?:[.,]\d+)?)\s*(?:min|')/); if (m) return +m[1].replace(',', '.'); const s = String(x.recuperacion || '').match(/(\d+)\s*(?:s|seg)/); return s ? +s[1] / 60 : 2; })();
+      if (x.reps && (x.distancia_rep_m || x.duracion_rep_min) && pace) { const rep = x.duracion_rep_min || x.distancia_rep_m / 1000 * pace / 60; dur = Math.round(15 + x.reps * rep + Math.max(0, x.reps - 1) * recMin + 10); est = true; }
+      else if (x.distancia_km && pace) { dur = Math.round(x.distancia_km * pace / 60 + (hard ? 25 : 0)); est = true; }
+    }
+    const DEF = { rodaje: 'Rodaje suave', recuperacion: 'Rodaje de recuperación', tirada_larga: 'Tirada larga', series: 'Series', subumbral: 'Controlado', umbral: 'Umbral', test: 'Test', competicion: 'Competición', fuerza: 'Fuerza', bici_base: 'Bici suave', bici_umbral: 'Bici calidad', otro: 'Otra actividad' };
+    const motorTipo = deporte === 'carrera' ? tipo : null;
+    return {
+      id: libId('ses'), fecha: iso(addDays(ini, x.dia)), dia: x.dia, deporte, tipo, titulo: (x.titulo || DEF[tipo]).slice(0, 80), objetivo: 'Planificada por ti',
+      calentamiento: hard ? '15-20 min suaves + progresiones (a tu criterio)' : '—', principal: (x.descripcion || x.titulo || DEF[tipo]).slice(0, 400),
+      ritmo: ritmoTxt || '—', fc_limite: fcTxt, recuperaciones: x.recuperacion || '—', vuelta_calma: hard ? '10 min suaves' : '—',
+      duracion_min: dur, duracion_estimada: est, criterios: [], reglas: [], propia: true,
+      plan_motor: motorTipo ? { tipo: motorTipo, reps: x.reps || null, ritmo_min: lo != null ? S(lo) : null, ritmo_max: hi != null ? S(hi) : null, fc_techo: fcT, duracion_min: dur } : null,
+      _src: { ...x }
+    };
+  },
+
+  // ---------- Revisión: avisa, no decide ----------
+  check(ini, ses) {
+    const a = ATLETA.ensure(); const p = PLANNER.paces(a); const out = [];
+    const W = (nivel, t, reglas = []) => out.push({ nivel, t, reglas });
+    const run = ses.filter(s => s.deporte === 'carrera');
+    const hardIdx = [...new Set(ses.filter(s => MIWK_HARD.includes(s.tipo)).map(s => s.dia))].sort((x, y) => x - y);
+    for (let i = 1; i < hardIdx.length; i++) {
+      const gap = hardIdx[i] - hardIdx[i - 1];
+      if (gap === 1) W('aviso', `${DIAS[hardIdx[i - 1]]} y ${DIAS[hardIdx[i]]}: dos sesiones exigentes seguidas.`, ['A-DESC']);
+      else if (gap < 4 && i === 1) W('info', `Entre ${DIAS[hardIdx[i - 1]].toLowerCase()} y ${DIAS[hardIdx[i]].toLowerCase()} hay ${gap - 1} día(s) intermedios: con más de 45 años, A-45 recomienda 5-7 días entre sesiones duras.`, ['A-45']);
+    }
+    if (hardIdx.length >= 3) W('aviso', `${hardIdx.length} sesiones exigentes en la semana.`, ['C5', 'A-45']);
+    const larg = run.find(s => s.tipo === 'tirada_larga');
+    if (larg && hardIdx.includes(larg.dia - 1)) W('aviso', `La víspera de la tirada larga (${DIAS[larg.dia - 1].toLowerCase()}) es una sesión exigente.`, ['A-DESC']);
+    ses.filter(s => s.deporte === 'fuerza').forEach(f => { if (hardIdx.includes(f.dia + 1)) W('aviso', `Fuerza el ${DIAS[f.dia].toLowerCase()}, víspera de una sesión de calidad.`, ['A-FUE']); });
+    let seguidos = 0, maxSeg = 0; for (let d = 0; d < 7; d++) { seguidos = run.some(s => s.dia === d) ? seguidos + 1 : 0; maxSeg = Math.max(maxSeg, seguidos); }
+    if (maxSeg > 3) W('aviso', `${maxSeg} días seguidos de carrera.`, ['A-DESC']);
+    if (!Array.from({ length: 7 }, (_, d) => d).some(d => !ses.some(s => s.dia === d))) W('info', 'Ningún día de descanso completo.', ['A-DESC']);
+    // C4: nada más rápido que el ritmo de 10K
+    if (p.diezk) run.filter(s => s.plan_motor?.ritmo_min && paceToSec(s.plan_motor.ritmo_min) < p.diezk - 2).forEach(s => W('aviso', `${DIAS[s.dia]}: ${s.plan_motor.ritmo_min}/km es más rápido que tu ritmo de 10K (${secToPace(p.diezk)}).`, ['C4']));
+    // volumen frente a lo que vienes haciendo (datos importados)
+    const R = PLANNER.recentVolume(new Date(ini + 'T12:00:00'));
+    const minRun = run.reduce((t, s) => t + (s.duracion_min || 0), 0); const sinDur = run.filter(s => !s.duracion_min).length;
+    if (!R.has) W('info', 'Sin actividades importadas en las 4 semanas anteriores: no puedo comparar el volumen con lo que vienes haciendo.');
+    else {
+      if (R.min_semana && minRun > R.min_semana * 1.15) W('aviso', `Volumen de carrera ${minRun} min${sinDur ? ` (+${sinDur} sesión/es sin duración)` : ''}: un ${Math.round((minRun / R.min_semana - 1) * 100)} % más que tu media de las 4 últimas semanas (${R.min_semana} min).`, ['D6', 'C9']);
+      const prevIni = iso(addDays(ini, -7));
+      const prevHard = getActivities().filter(x => x.fecha.slice(0, 10) >= prevIni && x.fecha.slice(0, 10) < ini && ['carrera', 'ciclismo'].includes(x.tipo)).filter(x => MIWK_HARD.includes(ENG.analyze(x).tipo)).length;
+      if (R.ultima && minRun > R.ultima * 1.05 && hardIdx.length > prevHard) W('aviso', `Sube a la vez el volumen (${R.ultima} → ${minRun} min) y el número de sesiones exigentes (${prevHard} → ${hardIdx.length}) respecto a la semana anterior.`, ['A-VOLINT', 'D6']);
+      if (larg?.duracion_min && R.longest && larg.duracion_min > R.longest * 1.2) W('aviso', `Tirada larga de ${larg.duracion_min} min frente a ${R.longest} min de tu salida más larga en 6 semanas.`, ['C9']);
+    }
+    // estado actual: seguridad, molestias y asimilación
+    if (SAFETY.get().activo) W('aviso', 'Hay un bloqueo de seguridad activo: ' + SAFETY.MSG, ['SEGURIDAD']);
+    const mol = DIARIO.all().filter(e => e.tipo === 'molestia' && e.fecha >= iso(addDays(UI.today(), -7)) && (+e.intensidad || 0) >= 4);
+    if (mol.length && hardIdx.length) W('aviso', `Molestia reciente de ${mol.map(m => `${m.zona} ${m.intensidad}/10`).join(', ')}: con 4/10 o más, mejor sin calidad mientras dure.`, ['A-LES']);
+    try { const E = ASIM.evaluate(UI.today()); const dec = E?.decision?.tipo; if (['REDUCIR', 'DESCARGAR'].includes(dec) && R.min_semana && minRun >= R.min_semana) W('aviso', `El seguimiento de asimilación indica ${dec}: esta semana no baja la carga respecto a tu media.`, E.decision.reglas || []); } catch { }
+    return out;
+  },
+
+  // ---------- Guardar ----------
+  emptyPlan(ini) {
+    return { origen: 'manual', n_calidad: 2, volumen_partida: { min_semana: null }, temporada: { inicio: ini, fin: iso(addDays(ini, 6)), blocks: [{ id: 'manual', nombre: 'Plan propio', fase: 'manual', inicio: ini, fin: iso(addDays(ini, 6)), semanas: 1, foco: 'Semanas planificadas por ti' }], notas: [] }, semanas: [] };
+  },
+  save(ini, ses, avisos, texto) {
+    let plan = PLAN.get(); const nuevo = !plan; if (!plan) plan = this.emptyPlan(ini);
+    const prev = PLAN.week(plan, ini); const before = prev ? summarizeWeek(prev) : null;
+    const clean = ses.map(({ _src, ...s }) => ({ ...s, fecha: iso(addDays(ini, s.dia)) }));
+    const run = clean.filter(s => s.deporte === 'carrera');
+    const w = {
+      inicio: ini, bloque: prev?.bloque || 'manual', fase: prev?.fase || 'manual', tipo: prev?.tipo || 'propia', idx_bloque: prev?.idx_bloque ?? 0,
+      min_obj: run.reduce((t, s) => t + (s.duracion_min || 0), 0), min_planificado: run.reduce((t, s) => t + (s.duracion_min || 0), 0),
+      n_calidad: clean.filter(s => ['series', 'subumbral', 'umbral', 'test'].includes(s.tipo)).length, n_exigentes: clean.filter(s => MIWK_HARD.includes(s.tipo)).length,
+      sesiones: clean, propia: true, origen: 'Planificada por ti', origen_volumen: 'semana planificada por ti', texto_original: texto,
+      notas: ['Semana planificada por ti: el entrenador no la modifica; sólo revisa y avisa.', ...avisos.map(x => (x.nivel === 'aviso' ? 'Aviso: ' : '') + x.t + (x.reglas.length ? ` (${x.reglas.join(', ')})` : ''))],
+      reglas: [...new Set(avisos.flatMap(x => x.reglas))]
+    };
+    const i = plan.semanas.findIndex(x => x.inicio === ini);
+    if (i >= 0) plan.semanas[i] = w; else { plan.semanas.push(w); plan.semanas.sort((x, y) => x.inicio.localeCompare(y.inicio)); }
+    if (plan.origen === 'manual') {
+      const T = plan.temporada; T.inicio = plan.semanas[0].inicio; T.fin = iso(addDays(plan.semanas.at(-1).inicio, 6));
+      Object.assign(T.blocks[0], { inicio: T.inicio, fin: T.fin, semanas: plan.semanas.length });
+    }
+    PLAN.save(plan, { tipo: 'semana_propia', semana: ini, decision: prev ? 'sustituir semana por la tuya' : 'semana planificada por ti', motivo: (texto || '').slice(0, 400), datos: { sesiones: clean.length, avisos: avisos.map(x => x.t) },
+      criterios: w.reglas, confianza: 'declarado', plan_anterior: before, plan_nuevo: summarizeWeek(w), aceptada: true });
+    return { plan, w, nuevo };
+  },
+
+  // ---------- Interfaz ----------
+  modal() {
+    let m = document.getElementById('miwk-modal');
+    if (!m) { document.body.insertAdjacentHTML('beforeend', '<div class="modal-overlay" id="miwk-modal" role="dialog" aria-modal="true" aria-labelledby="miwk-title"><div class="modal" style="width:920px;max-width:96vw"><div id="miwk-body"></div></div></div>'); m = document.getElementById('miwk-modal'); m.onclick = e => { if (e.target === m) this.close(); }; }
+    return m;
+  },
+  open(texto = '', auto = false) {
+    const ini = this.defaultWeek(texto);
+    this.st = { ini, texto, sesiones: null, dudas: [], avisos: [], busy: false, err: null };
+    this.modal().classList.add('open'); this.render();
+    if (auto && texto.trim()) this.run();
+  },
+  close() { VOZ.stop(); document.getElementById('miwk-modal')?.classList.remove('open'); this.st = null; },
+  render() {
+    const st = this.st; if (!st) return; const body = document.getElementById('miwk-body');
+    const ia = UI.caps?.ia;
+    const prevW = PLAN.week(PLAN.get(), st.ini);
+    const opts = this.weeks().map((d, i) => `<option value="${d}" ${d === st.ini ? 'selected' : ''}>${i === 0 ? 'Esta semana' : i === 1 ? 'La semana que viene' : 'Semana'} · lunes ${fmtD(d)}</option>`).join('');
+    const tbl = st.sesiones ? `<div class="table-wrap"><table class="miwk-t"><thead><tr><th>Día</th><th>Sesión</th><th>Parte principal</th><th>Min</th><th>Ritmo</th><th>Pulso</th><th></th></tr></thead><tbody>
+      ${st.sesiones.length ? st.sesiones.map((s, k) => `<tr><td>${DIAS[s.dia].slice(0, 3)} ${fmtD(s.fecha)}</td><td><b>${UI.esc(s.titulo)}</b><div class="text-muted" style="font-size:11px">${UI.esc(SESSION_TYPES[s.tipo] || (s.tipo === 'bici_base' ? 'Bici suave' : s.tipo === 'bici_umbral' ? 'Bici calidad' : s.tipo))}</div></td><td>${UI.esc(s.principal)}${s.recuperaciones !== '—' ? `<div class="text-muted" style="font-size:11px">Recuperación: ${UI.esc(s.recuperaciones)}</div>` : ''}</td>
+        <td><input class="form-input miwk-n" type="number" min="0" max="400" value="${s.duracion_min ?? ''}" onchange="MIWK.setDur(${k}, this.value)" aria-label="Minutos">${s.duracion_estimada ? '<div class="text-muted" style="font-size:10px">estimado</div>' : ''}</td><td>${UI.esc(s.ritmo)}</td><td style="font-size:11.5px">${UI.esc(s.fc_limite)}</td>
+        <td><button class="btn btn-ghost btn-sm" title="Quitar" aria-label="Quitar sesión" onclick="MIWK.del(${k})">✕</button></td></tr>`).join('') : '<tr><td colspan="7" class="text-muted">No he entendido ninguna sesión. Prueba a decir el día y lo que quieres hacer.</td></tr>'}
+      </tbody></table></div>` : '';
+    const dudas = st.dudas.length ? `<div class="ui-alert warn" style="margin-top:8px"><b>Dudas al interpretar</b> (corrígelas abajo si hace falta):<ul class="eng-list">${st.dudas.map(d => `<li>${UI.esc(d)}</li>`).join('')}</ul></div>` : '';
+    const av = st.sesiones ? (st.avisos.length ? `<div style="margin-top:8px"><div class="form-label">Lo que ve el entrenador (no cambia nada: decides tú)</div>${st.avisos.map(x => `<div class="ui-alert ${x.nivel === 'aviso' ? 'warn' : ''}" style="margin:4px 0;font-size:12.5px">${UI.esc(x.t)} ${x.reglas.map(r => `<span class="eng-rule">${UI.esc(r)}</span>`).join(' ')}</div>`).join('')}</div>` : '<div class="ui-alert" style="margin-top:8px;font-size:12.5px">El entrenador no ve nada que contradiga tus reglas.</div>') : '';
+    body.innerHTML = `<h3 id="miwk-title">Mi semana</h3>
+      <div class="ui-sub" style="margin:-10px 0 12px">Dicta o escribe la semana que quieres hacer. La IA la convierte en sesiones; tú la revisas y la guardas. Nada se guarda sin tu confirmación.</div>
+      ${ia === false ? `<div class="ui-alert err">La IA no está disponible aquí (${UI.esc(UI.caps.motivo || '')}): sin ella no puedo interpretar el dictado.</div>` : ''}
+      <div class="grid-2" style="grid-template-columns:260px 1fr;gap:12px;align-items:start">
+        <div class="form-group"><label class="form-label" for="miwk-week">Semana</label><select class="form-input" id="miwk-week" onchange="MIWK.setWeek(this.value)">${opts}</select>
+          ${prevW ? `<div class="help" style="margin-top:4px">${prevW.propia ? 'Ya tienes esta semana planificada: si guardas, se sustituye (queda en el historial).' : 'Esta semana tiene sesiones del plan del entrenador: si guardas, se sustituyen por las tuyas (queda en el historial).'}</div>` : ''}</div>
+        <div class="form-group"><label class="form-label" for="miwk-text">${st.sesiones ? 'Corrección (por voz o texto)' : 'Tu semana'}</label>
+          <textarea class="form-input" id="miwk-text" rows="${st.sesiones ? 2 : 4}" placeholder="${st.sesiones ? 'Ej.: el jueves mejor 3×3000 a 4:35 con 3 minutos, y quita el domingo' : 'Ej.: lunes 5×1000 a 4:20 con 2 minutos de trote, martes rodaje de 50, miércoles descanso, jueves 2×5 km controlado a 4:50, sábado largo de hora y media, domingo rodaje de 40'}">${UI.esc(st.sesiones ? '' : st.texto)}</textarea>
+          <div class="flex gap-8" style="margin-top:6px;flex-wrap:wrap">${VOZ.btnHtml('miwk-text')}<button class="btn btn-primary" ${st.busy || ia === false ? 'disabled' : ''} onclick="MIWK.run()">${st.busy ? 'Interpretando…' : st.sesiones ? 'Aplicar corrección' : 'Montar la semana'}</button>
+          ${VOZ.ok() ? '' : '<span class="text-muted" style="font-size:11.5px;align-self:center">Este navegador no tiene dictado por voz (usa Chrome o Safari, o el micrófono del teclado del móvil).</span>'}</div></div>
+      </div>
+      ${st.err ? `<div class="ui-alert err">${UI.esc(st.err)}</div>` : ''}
+      ${tbl}${dudas}${av}
+      <div class="modal-footer"><button class="btn btn-secondary" onclick="MIWK.close()">Cancelar</button>${st.sesiones ? `<button class="btn btn-primary" ${st.busy || !st.sesiones.length ? 'disabled' : ''} onclick="MIWK.confirm()">Guardar mi semana</button>` : ''}</div>`;
+  },
+  setWeek(ini) { const st = this.st; const ta = document.getElementById('miwk-text'); if (ta && !st.sesiones) st.texto = ta.value; st.ini = ini; if (st.sesiones) { st.sesiones = st.sesiones.map(s => ({ ...s, fecha: iso(addDays(ini, s.dia)) })); st.avisos = this.check(ini, st.sesiones); } this.render(); },
+  setDur(k, v) { const s = this.st.sesiones[k]; s.duracion_min = v === '' ? null : Math.max(0, Math.min(400, +v)); s.duracion_estimada = false; if (s.plan_motor) s.plan_motor.duracion_min = s.duracion_min; s._src.duracion_min = s.duracion_min; this.st.avisos = this.check(this.st.ini, this.st.sesiones); this.render(); },
+  del(k) { this.st.sesiones.splice(k, 1); this.st.avisos = this.check(this.st.ini, this.st.sesiones); this.render(); },
+  async run() {
+    const st = this.st; const ta = document.getElementById('miwk-text'); const t = (ta?.value || '').trim();
+    if (!t) return toast(st.sesiones ? 'Dicta o escribe la corrección' : 'Dicta o escribe tu semana');
+    VOZ.stop();
+    if (!st.sesiones) { st.texto = t; const w = this.defaultWeek(t); if (/semana que viene|pr[oó]xima semana|siguiente semana|esta semana/i.test(t) && w !== st.ini) st.ini = w; }
+    st.busy = true; st.err = null; this.render();
+    try {
+      const r = await this.interpret(t, st.ini, st.sesiones);
+      if (st !== this.st) return; // cerrado mientras tanto
+      if (st.sesiones) st.texto += '\nCorrección: ' + t;
+      st.sesiones = r.sesiones; st.dudas = r.dudas; st.avisos = this.check(st.ini, st.sesiones);
+    } catch (e) { st.err = 'No se pudo interpretar: ' + e.message; }
+    st.busy = false; this.render();
+  },
+  confirm() {
+    const st = this.st; if (!st?.sesiones?.length) return;
+    const { w } = this.save(st.ini, st.sesiones, st.avisos, st.texto);
+    this.close(); toast('Semana guardada como tu plan'); COACH_UI.selWeek = w.inicio;
+    if (currentView === 'plan') renderPlan(); else if (currentView === 'conversacion') { CHAT.push({ de: 'coach', html: `Guardada tu semana del ${fmtD(w.inicio)}: ${w.sesiones.length} sesiones, ${w.min_planificado} min de carrera. A partir de ahora comparo cada actividad con lo que has planificado tú.`, acciones: [['Ver la semana', `COACH_UI.selWeek='${w.inicio}';navigate('plan')`]] }); renderChat(); }
+    else UI.views[currentView]?.();
+  }
+};
+
+// ---------- Integración: el entrenador no reescribe tus semanas ----------
+(function () {
+  // Regenerar el plan conserva las semanas que has planificado tú
+  const gen0 = PLANNER.generate.bind(PLANNER);
+  PLANNER.generate = function (atleta, o) {
+    const plan = gen0(atleta, o); const prev = PLAN.get();
+    const mine = (prev?.semanas || []).filter(w => w.propia);
+    const hoy = iso(mondayOf(new Date()));
+    mine.forEach(m => { const i = plan.semanas.findIndex(w => w.inicio === m.inicio); if (i >= 0) plan.semanas[i] = m; else if (m.inicio >= hoy) plan.semanas.push(m); });
+    plan.semanas.sort((x, y) => x.inicio.localeCompare(y.inicio));
+    return plan;
+  };
+  // La revisión semanal no propone cambios sobre una semana tuya: te da su lectura y decides tú
+  const prop0 = REVIEW.proposal.bind(REVIEW);
+  REVIEW.proposal = function (plan, review) {
+    const nextIni = iso(addDays(review.semana, 7)); const cur = PLAN.week(plan, nextIni);
+    if (cur?.propia) return { error: `La semana del ${fmtD(nextIni)} la has planificado tú: el entrenador no la cambia. Ten en cuenta su lectura: ${(review.decisiones || []).map(d => d.texto).join(' ')}` };
+    return prop0(plan, review);
+  };
+  // Cambios de disponibilidad por la conversación: no mueve sesiones de una semana tuya
+  const disp0 = CHAT_ANS.disponibilidad;
+  CHAT_ANS.disponibilidad = async function (f) {
+    const plan = PLAN.get(); const w = plan && f.alcance !== 'siempre' ? PLAN.week(plan, iso(mondayOf(new Date(f.fecha + 'T12:00:00')))) : null;
+    if (w?.propia) { DIARIO.add({ tipo: 'disponibilidad', fecha: f.fecha, alcance: 'puntual', correr: f.correr, bici: f.bici, notas: f.notas }); return { t: `Anotado: el ${UI.esc(UI.fmtDay(f.fecha))} ${f.correr ? 'puedes' : 'no puedes'} correr. Esa semana la has planificado tú, así que no muevo nada: dime cómo la quieres y la rehago.`, acciones: [['Rehacer mi semana', `MIWK.open()`]] }; }
+    return disp0.call(this, f);
+  };
+  // Conversación: botón de dictado y reconocimiento de "mi semana"
+  const intent0 = chatIntent;
+  chatIntent = function (t) {
+    const it = intent0(t); if (it === 'alarma' || it === 'molestia') return it;
+    const tl = t.toLowerCase();
+    const dias = (tl.match(/\b(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)\b/g) || []).length;
+    const ses = /(rodaje|series|controlado|umbral|largo|tirada|descanso|fuerza|bici|\d+\s*(x|×|por)\s*\d+|miles)/.test(tl);
+    const pasadoOPregunta = /(\?|qu[eé] tal|c[oó]mo (fue|ha ido|me fue)|\bhice\b|\bfue\b|\bcorr[ií]\b|\bsal[ií]\b|\bhe hecho\b|\bhizo\b)/.test(tl);
+    if (pasadoOPregunta && !/(mi semana|planifica)/.test(tl)) return it;
+    if ((dias >= 2 && ses) || /(mi semana|planifica(r)? (la|mi) semana|m[oó]ntame la semana|la semana que (quiero|voy a) hacer)/.test(tl)) return 'semana';
+    return it;
+  };
+  const send0 = chatSend;
+  chatSend = async function () {
+    const ta = document.getElementById('chat-text'); const t = (ta?.value || '').trim();
+    if (t && chatIntent(t) === 'semana') {
+      VOZ.stop(); ta.value = ''; chatUser(t);
+      CHAT.push({ de: 'coach', html: 'Te monto esa semana para que la revises antes de guardarla.', acciones: [['Abrir mi semana', `MIWK.open(${JSON.stringify(t)}, true)`]] }); renderChat();
+      return MIWK.open(t, true);
+    }
+    return send0();
+  };
+  const rc0 = renderChat;
+  renderChat = function () {
+    rc0.apply(this, arguments);
+    const f = document.querySelector('#view-conversacion .chat-input');
+    if (f && VOZ.ok() && !f.querySelector('.voz-btn')) f.querySelector('button[type="submit"]').insertAdjacentHTML('beforebegin', VOZ.btnHtml('chat-text', 'voz-chat'));
+    const ch = document.getElementById('chat-chips');
+    if (ch && !ch.querySelector('[data-miwk]')) ch.insertAdjacentHTML('afterbegin', '<button class="chat-chip" data-miwk onclick="MIWK.open()">Planificar mi semana</button>');
+  };
+  // Plan: botón "Mi semana" (también sin plan generado)
+  const rp0 = renderPlan;
+  renderPlan = function () {
+    rp0.apply(this, arguments);
+    const el = document.getElementById('plan-body'); if (!el) return;
+    const card = `<div class="card mb-16 miwk-card"><div class="flex-between" style="gap:12px;flex-wrap:wrap"><div><div class="card-title" style="margin:0">Planifica tú la semana</div><div class="text-muted" style="font-size:12px">Dicta o escribe lo que quieres hacer: se convierte en sesiones, el entrenador te avisa si algo choca con tus reglas y tú decides.</div></div><button class="btn btn-primary" onclick="MIWK.open()">${VOZ.ok() ? '🎤 ' : ''}Mi semana</button></div></div>`;
+    el.insertAdjacentHTML('afterbegin', card);
+    const w = PLAN.week(PLAN.get(), COACH_UI.selWeek || '');
+    if (w?.propia && w.texto_original) el.querySelectorAll('.co-days').forEach(d => d.insertAdjacentHTML('beforebegin', `<details style="font-size:12px;margin:4px 0"><summary>Lo que dictaste</summary><div class="text-muted" style="white-space:pre-wrap">${UI.esc(w.texto_original)}</div></details>`));
+  };
+})();
 
 // ============================================================
 // DATOS: archivo original, exportación CSV, copia de seguridad completa y restauración
