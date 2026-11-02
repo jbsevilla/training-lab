@@ -373,6 +373,15 @@
 .miwk-t td{vertical-align:top;font-size:12.5px}
 .miwk-t .miwk-n{width:64px;padding:4px}
 @media (max-width:700px){.voz-l{display:none}#miwk-body .grid-2{grid-template-columns:1fr!important}.miwk-t th:nth-child(6),.miwk-t td:nth-child(6){display:none}}
+
+/* Fuerza isométrica */
+.iso-ficha{border-top:1px solid var(--border);padding:6px 0;font-size:12.5px}
+.iso-ficha summary{cursor:pointer}
+.iso-det{padding:6px 0 2px 14px;display:grid;gap:3px;font-size:12px}
+.iso-log td{vertical-align:middle;font-size:12px;padding:4px 6px}
+.iso-log .iso-h td{background:var(--bg3,rgba(255,255,255,.04));padding-top:8px}
+.iso-n{width:58px;padding:3px}.iso-s{width:auto;padding:3px;font-size:12px}.iso-t{width:120px;padding:3px;font-size:12px}
+@media (max-width:700px){.iso-ruts{grid-template-columns:1fr!important}.iso-t{width:90px}}
 </style>
 </head>
 <body>
@@ -2657,6 +2666,7 @@ const MANUAL_RULES = [
   { id: 'C11', etiqueta: 'C', seccion: 'Periodización', categorias: ['periodizacion'], texto: 'Ninguna periodicidad orientativa se convierte en regla rígida.' },
   { id: 'C12', etiqueta: 'C', seccion: 'Rigor', categorias: ['principios'], texto: 'No inventar criterios ni atribuir a Luis del Águila lo que no esté en sus fuentes.' },
   { id: 'C13', etiqueta: 'C', seccion: 'Test', categorias: ['tests', 'competicion'], texto: 'Re-test 4×2000 en 1-2 semanas, antes del maratón de Valencia (6 dic 2026); Valencia es para completarlo, no para competirlo.' },
+  { id: 'C14', etiqueta: 'C', seccion: 'Fuerza', categorias: ['fuerza', 'lesiones'], texto: 'Fuerza: isometría con cinturón rígido a baja intensidad (3-4/10) para activar debilidades musculares sin generar fatiga: 6 s de contracción y 6 s de relajación, 6 veces, 2 rondas por ejercicio, variante y lado; si entra otra musculatura, se baja todavía más la intensidad. Sin pesas ni gimnasio. La alta intensidad (1 min en tramos de 15 s al 25, 50, 75 y 100 %) sólo cuando el deportista lo decida. Criterio declarado por Jesús a partir de su trabajo con Luis del Águila.' },
   // ---- A: principios documentados de Luis incluidos en el manual ----
   { id: 'A-CONT', etiqueta: 'A', seccion: 'Continuidad', categorias: ['principios', 'filosofia'], fuente: U.noruego, fecha: '2026-10-16', texto: 'Gana el que no se para: una sesión semanal sostenida supera a un plan más ambicioso que se interrumpe. Una semana perdida no se recupera metiendo dos sesiones en la siguiente.' },
   { id: 'A-ZON', etiqueta: 'A', seccion: 'Zonas', categorias: ['zonas', 'umbrales', 'fc'], fuente: U.seminario, fecha: '2026-09-05', texto: 'Tres zonas: Z1 por debajo del primer umbral, Z2 entre umbrales, Z3 por encima del segundo umbral. El test fija las intensidades; la FC las acompaña como techo, no como objetivo.' },
@@ -8436,8 +8446,9 @@ REGLAS:
 - Si algo es ambiguo o falta un dato importante, NO lo supongas: escríbelo en "dudas" (frases cortas en español).
 - Si se te da una SEMANA ACTUAL y una CORRECCIÓN, devuelve la semana completa con la corrección aplicada y el resto igual.
 - "descripcion": la parte principal tal como la dijo, en limpio (p. ej. "5×1000 a 4:20 con 2 min de trote").
+- Fuerza: tiene 3 rutinas. A = aductores y cadera; B = isquios y psoas; C = pie y tronco. Si nombra una ("rutina B", "la de pie" = C, "la de aductores" = A, "la de isquios" = B), pon "rutina"; si sólo dice "fuerza", deja "rutina" en null (la plataforma sugiere la que toca).
 Responde SOLO con JSON:
-{"semana":"actual|siguiente|null","sesiones":[{"dia":0-6 (0=lunes),"deporte":"carrera|bici|fuerza|otro","tipo":"${MIWK_TIPOS.join('|')}","titulo":"corto","descripcion":"...","duracion_min":n|null,"distancia_km":n|null,"reps":n|null,"distancia_rep_m":n|null,"duracion_rep_min":n|null,"recuperacion":"texto"|null,"ritmo":"m:ss" o "m:ss-m:ss"|null,"ritmo_ref":"umbral|maraton|10k|rodaje"|null,"fc_techo":n|null}],"dudas":["..."]}`;
+{"semana":"actual|siguiente|null","sesiones":[{"dia":0-6 (0=lunes),"deporte":"carrera|bici|fuerza|otro","tipo":"${MIWK_TIPOS.join('|')}","titulo":"corto","descripcion":"...","duracion_min":n|null,"distancia_km":n|null,"reps":n|null,"distancia_rep_m":n|null,"duracion_rep_min":n|null,"recuperacion":"texto"|null,"ritmo":"m:ss" o "m:ss-m:ss"|null,"ritmo_ref":"umbral|maraton|10k|rodaje"|null,"fc_techo":n|null,"rutina":"A|B|C"|null}],"dudas":["..."]}`;
 
 const MIWK = {
   st: null, // estado del editor: { ini, texto, sesiones, dudas, avisos, busy }
@@ -8699,6 +8710,360 @@ const MIWK = {
     el.insertAdjacentHTML('afterbegin', card);
     const w = PLAN.week(PLAN.get(), COACH_UI.selWeek || '');
     if (w?.propia && w.texto_original) el.querySelectorAll('.co-days').forEach(d => d.insertAdjacentHTML('beforebegin', `<details style="font-size:12px;margin:4px 0"><summary>Lo que dictaste</summary><div class="text-muted" style="white-space:pre-wrap">${UI.esc(w.texto_original)}</div></details>`));
+  };
+})();
+
+// ============================================================
+// FUERZA — Isometría con cinturón a baja intensidad (método de trabajo de Jesús con Luis del Águila)
+// Catálogo propio, 3 rutinas que rotan, registro de activación/compensación/molestias por ejercicio y lado,
+// y valoración de zonas prioritarias. El catálogo anterior (Prompt 7) queda desactivado, no borrado.
+// ============================================================
+const ISO_FUENTES = { tablas: 'Tablas de trabajo de Luis del Águila', youtube: 'Vídeos de Luis del Águila (YouTube), incorporados por ti', propia: 'Tu propia progresión' };
+const ISO_BLOQUES = { cadera: 'Cadera', isquios: 'Isquiotibiales', rodilla: 'Cuádriceps', pie: 'Pie y tobillo', tronco: 'Tronco', superior: 'Tren superior' };
+const ISO_ACT = { 0: 'nada', 1: 'algo', 2: 'claramente' };
+const ISO_PROTOCOLO = '2 rondas de 6 × (6 s de contracción + 6 s de relajación) en cada variante y lado';
+// prot: iso66 (6×6/6 ×2) · reps (series × repeticiones lentas) · core (repeticiones lentas a un lado y otro) · sentadilla
+// lados: cada (cada pierna/pie por separado) · ambas (las dos a la vez o central)
+const ISO_EJ = [
+  { id: 'add_pubis', n: 'ADD pubis (aducción)', b: 'cadera', obj: 'Aductores', kw: ['aductor', 'ingle', 'pubis'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: ['rotación interna', 'rotación externa'],
+    pos: 'Boca arriba, piernas estiradas; la pierna que trabaja a la altura de los hombros o unos 10° hacia dentro. Cinturón rígido anclado a un punto fijo del lateral (mancuerna, pata de mueble) y pasado por encima del tobillo.',
+    cont: 'Fuerza hacia dentro, con la rotación de cadera de la variante.', rel: 'Aflojar sin soltar la posición.', vig: 'Que trabajen los aductores; si entra otra musculatura, bajar todavía más la intensidad.' },
+  { id: 'abd', n: 'Glúteo medio (ABD, abducción)', b: 'cadera', obj: 'Glúteo medio', kw: ['glúteo medio', 'gluteo medio', 'cadera', 'trocánter', 'trocanter', 'cintilla'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: ['anterior (rotación interna)', 'posterior (rotación externa)'],
+    pos: 'Boca arriba, piernas abiertas 20-30°, algo por fuera de la altura de los hombros. Cinturón rígido alrededor de las dos piernas: una hace de resistencia a la otra.',
+    cont: 'Fuerza hacia fuera con la pierna que trabaja (primero una y luego la otra); la que resiste trabaja de forma secundaria.', rel: 'Aflojar manteniendo el cinturón en su sitio.', vig: 'Si compensa con otra musculatura, aflojar.' },
+  { id: 'aductor_fv', n: 'Aductor mayor: fibras verticales', b: 'cadera', obj: 'Aductor mayor (fibras verticales)', kw: ['aductor', 'ingle', 'pubis'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: null,
+    pos: 'Boca arriba, rodilla de la pierna que trabaja estirada, pelota de goma espuma bajo la zona del tobillo. La otra pierna sólo da apoyo.',
+    cont: 'Rotación interna de cadera y fuerza hacia abajo contra la pelota. Que la pelvis de ese lado se levante es lo que se busca.', rel: 'Aflojar sin perder el contacto con la pelota.', vig: 'Aislar el aductor; si compensa, aflojar.' },
+  { id: 'pelvitroc', n: 'Pelvitrocantéreos (géminos, rotadores externos)', b: 'cadera', obj: 'Rotadores externos profundos', kw: ['piramidal', 'glúteo', 'gluteo', 'cadera', 'ciática', 'ciatica'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: ['pie apoyado', 'pierna en el aire'],
+    pos: 'Boca arriba. Pie apoyado: rodilla doblada con el pie en el suelo. En el aire: cadera a unos 90° (la rodilla puede flexionar algo más). Pelota de goma espuma entre la cara externa del muslo y un apoyo fijo lateral.',
+    cont: 'Presionar hacia fuera con la parte media lateral del muslo, sin ningún giro de la pierna.', rel: 'La pelota sigue en contacto, más flojo.', vig: 'Sin rotación: sólo la parte media lateral del muslo.' },
+  { id: 'ext_cadera', n: 'Extensión de cadera (glúteo mayor)', b: 'cadera', obj: 'Glúteo mayor', kw: ['glúteo', 'gluteo', 'lumbar', 'cadera'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: null,
+    pos: 'Boca abajo, sin cinturón, sólo con el peso de la pierna. Rodilla a 90°.',
+    cont: 'Levantar el muslo del suelo.', rel: 'La pierna no toca el suelo, aunque quede a ras: siempre algo de tensión.', vig: 'Sin arquear la zona lumbar, pelvis pegada al suelo y sin activar de más (si no, entra el isquio).' },
+  { id: 'psoas_mayor', n: 'Psoas mayor', b: 'cadera', obj: 'Psoas mayor', kw: ['lumbar', 'psoas', 'ingle'], fuente: 'youtube', prot: 'iso66', lados: 'cada', var: null,
+    pos: 'Boca arriba, una pierna estirada y la otra doblada hacia el pecho, siempre en el aire. Pelota de goma espuma en el pliegue entre el muslo y el abdomen.',
+    cont: 'Fuerza hacia el pecho apretando la pelota.', rel: 'Aflojar un poco manteniendo la pelota en su sitio; la pierna no se apoya nunca.', vig: 'Objetivo: quitar tensión lumbar.' },
+  { id: 'psoas_iliaco', n: 'Psoas ilíaco', b: 'cadera', obj: 'Psoas ilíaco', kw: ['lumbar', 'psoas', 'ingle'], fuente: 'youtube', prot: 'iso66', lados: 'cada', var: null,
+    pos: 'Boca arriba. Cinturón largo: un extremo en el pie de la pierna estirada (sólo anclaje, basta con mantenerla recta) y el otro por encima de la rodilla de la pierna que trabaja, medido para que haga tope con la cadera a 90°.',
+    cont: 'Un punto de tensión llevando la rodilla hacia el pecho contra el cinturón.', rel: 'La pierna sigue a 90°, sin apretar y sin bajar al suelo.', vig: 'El gesto justo para aislar el psoas, sin fuerza excesiva.' },
+  { id: 'piramidal', n: 'Piramidal', b: 'cadera', obj: 'Piramidal', kw: ['piramidal', 'glúteo', 'gluteo', 'ciática', 'ciatica'], fuente: 'youtube', prot: 'iso66', lados: 'ambas', var: null,
+    pos: 'Sentado en el borde de la cama con los pies en el aire. Cinturón rígido alrededor de las dos piernas, justo por encima de las rodillas.',
+    cont: 'Las dos piernas a la vez hacia fuera, con un componente en diagonal hacia abajo.', rel: 'Aflojar manteniendo el cinturón.', vig: 'Musculatura profunda del piramidal: baja intensidad.' },
+  { id: 'cuad_iso', n: 'Cuádriceps isométrico', b: 'rodilla', obj: 'Cuádriceps', kw: ['rodilla', 'cuádriceps', 'cuadriceps', 'rótula', 'rotula'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: null,
+    pos: 'Boca arriba, pierna estirada, pelota de goma espuma bajo la rodilla.', cont: 'Extender la rodilla presionando la pelota hacia abajo.', rel: 'Aflojar sin soltar la pelota.', vig: 'Activar el cuádriceps a baja intensidad.' },
+  { id: 'biceps_fem', n: 'Flexión de rodilla: bíceps femoral', b: 'isquios', obj: 'Bíceps femoral', kw: ['isquio', 'bíceps femoral', 'biceps femoral', 'femoral'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: null,
+    pos: 'Boca arriba, rodillas flexionadas en posición cómoda con el pie apoyado. Cinturón anclado más allá de los pies, por detrás del talón. Talón un poco levantado del suelo.',
+    cont: 'Flexión de rodilla (talón hacia el glúteo) con rotación externa de la tibia: girar el talón desde la rodilla, no la punta del pie desde el tobillo.', rel: 'Aflojar con el talón en el aire.', vig: 'Que la rodilla no vaya hacia el pecho (entraría la flexión de cadera).' },
+  { id: 'semis', n: 'Flexión de rodilla: semimembranoso y semitendinoso', b: 'isquios', obj: 'Semimembranoso y semitendinoso', kw: ['isquio', 'semitendinoso', 'semimembranoso', 'femoral'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: null,
+    pos: 'Igual que el bíceps femoral.', cont: 'Flexión de rodilla con rotación interna de la tibia, girando el talón desde la rodilla.', rel: 'Aflojar con el talón en el aire.', vig: 'Que la rodilla no vaya hacia el pecho.' },
+  { id: 'soleo', n: 'Gemelo-sóleo / flexión plantar', b: 'pie', obj: 'Sóleo', kw: ['sóleo', 'soleo', 'gemelo', 'aquiles', 'pantorrilla'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: null,
+    pos: 'Tumbado boca arriba, pierna estirada; pelota de goma espuma contra la pared, adaptada a todo el arco plantar.', cont: 'Gesto de tobillo, como si el pie abrazara la pelota.', rel: 'Aflojar sin soltar la pelota.', vig: 'No empujar con la puntera: entraría el gemelo en vez del sóleo.' },
+  { id: 'tibial_ant', n: 'Tibial anterior (flexión dorsal)', b: 'pie', obj: 'Tibial anterior', kw: ['tibia', 'espinilla', 'periostio', 'tibial anterior'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: null,
+    pos: 'Boca arriba, piernas estiradas. Cinturón anclado más allá de los pies, sobre el empeine justo debajo de los dedos; dedos un poco en garra.', cont: 'Llevar el pie hacia ti.', rel: 'Aflojar sin soltar el cinturón.', vig: 'Baja intensidad.' },
+  { id: 'pronacion', n: 'Pronación del pie (peroneos)', b: 'pie', obj: 'Peroneos', kw: ['peroneo', 'tobillo', 'pie'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: null,
+    pos: 'Rodilla semiflexionada, talón apoyado y dedos casi rozando el suelo. Cinturón anclado a un punto fijo lateral, por mitad del pie (bajo los metatarsos).', cont: 'Girar la planta hacia fuera.', rel: 'Aflojar sin soltar.', vig: 'Baja intensidad.' },
+  { id: 'supinacion', n: 'Supinación del pie (tibial posterior)', b: 'pie', obj: 'Tibial posterior', kw: ['tibial posterior', 'arco', 'fascia', 'plantar', 'tobillo', 'pie'], fuente: 'tablas', prot: 'iso66', lados: 'cada', var: null,
+    pos: 'Igual que la pronación, con el anclaje al otro lado.', cont: 'Girar la planta hacia dentro.', rel: 'Aflojar sin soltar.', vig: 'Baja intensidad.' },
+  { id: 'cuadrado_lumbar', n: 'Cuadrado lumbar (erectores)', b: 'tronco', obj: 'Erectores lumbares', kw: ['lumbar', 'espalda'], fuente: 'youtube', prot: 'iso66', lados: 'ambas', var: null,
+    pos: 'Boca arriba, piernas estiradas.', cont: 'Arquear la zona lumbar con la pelvis y la zona dorsal siempre en contacto con el suelo.', rel: 'Aflojar sin despegar nada.', vig: 'Que no se despegue la pelvis ni la dorsal en ningún momento.' },
+  { id: 'core_rot', n: 'Rotaciones de core (transverso)', b: 'tronco', obj: 'Transverso del abdomen', kw: ['lumbar', 'abdomen', 'abdominal'], fuente: 'youtube', prot: 'core', lados: 'ambas', var: null,
+    pos: 'Boca arriba, cadera y rodillas a 90°, brazos abiertos para estabilizar.', cont: 'Llevar las rodillas a un lado y al otro, lento.', rel: '—', vig: 'Repeticiones lentas hasta notar algo de esfuerzo, sin llegar a fatigar.' },
+  { id: 'sentadilla', n: 'Sentadilla lenta (vasto medial)', b: 'rodilla', obj: 'Vasto medial (cuádriceps)', kw: ['rodilla', 'cuádriceps', 'cuadriceps', 'rótula', 'rotula'], fuente: 'tablas', prot: 'sentadilla', lados: 'ambas', var: null,
+    pos: 'Sin peso. Pies a la anchura de los hombros y apuntando hacia fuera.', cont: 'Bajada y subida muy lentas; arriba las rodillas quedan flexionadas unos 20-30° (nunca se bloquean).', rel: '—', vig: 'Tensión en el cuádriceps en todo momento. Inicial: protocolo de 6. Avanzado (tu progresión): patrón continuo, hasta unos 3 min.' },
+  { id: 'fondos', n: 'Fondos de pecho', b: 'superior', obj: 'Pecho y tríceps', kw: ['hombro'], fuente: 'youtube', prot: 'reps', reps: '2×8-10', lados: 'ambas', var: null, pos: '—', cont: 'Ejecución lenta.', rel: '—', vig: '—' },
+  { id: 'flexiones', n: 'Flexiones', b: 'superior', obj: 'Pecho y tríceps', kw: ['hombro'], fuente: 'youtube', prot: 'reps', reps: '2×8-10', lados: 'ambas', var: null, pos: '—', cont: 'Ejecución lenta.', rel: '—', vig: '—' },
+  { id: 'dominadas', n: 'Dominadas asistidas con goma', b: 'superior', obj: 'Dorsales y bíceps', kw: ['hombro'], fuente: 'youtube', prot: 'reps', reps: '2×8-10', lados: 'ambas', var: null, pos: 'Con goma elástica de asistencia.', cont: 'Ejecución lenta.', rel: '—', vig: '—' }
+];
+const ISO = Object.fromEntries(ISO_EJ.map(e => [e.id, e]));
+ISO_EJ.forEach(e => { if (!EJ[e.id]) EJ[e.id] = { id: e.id, n: e.n, g: [], c: [], iso: true }; }); // nombres para revisión y asimilación
+const ISO_RUTINAS_DEF = {
+  A: { nombre: 'Aductores y cadera', ej: ['add_pubis', 'aductor_fv', 'abd', 'pelvitroc', 'cuad_iso', 'ext_cadera'] },
+  B: { nombre: 'Isquios y psoas', ej: ['biceps_fem', 'semis', 'abd', 'psoas_mayor', 'psoas_iliaco', 'ext_cadera', 'cuad_iso', 'sentadilla'] },
+  C: { nombre: 'Pie y tronco', ej: ['soleo', 'tibial_ant', 'pronacion', 'supinacion', 'piramidal', 'ext_cadera', 'cuadrado_lumbar', 'core_rot', 'sentadilla'] }
+};
+const ISO_COMPLEMENTO = ['fondos', 'flexiones', 'dominadas'];
+
+const ISOF = {
+  rutinas() { return DB.get('iso_rutinas') || ISO_RUTINAS_DEF; },
+  metodo() { return DB.get('fuerza_metodo') || 'iso'; },
+  units(e) { // bloques de 2 rondas: variante × lado
+    const vs = e.var || [null]; const ls = e.lados === 'cada' ? ['izq', 'der'] : [null];
+    return vs.flatMap(v => ls.map(l => ({ variante: v, lado: l })));
+  },
+  minutos(rut) {
+    const R = this.rutinas()[rut]; if (!R) return 40;
+    return Math.round(R.ej.reduce((t, id) => { const e = ISO[id]; if (!e) return t; if (e.prot === 'iso66') return t + this.units(e).length * 2.4 + 1; return t + (e.prot === 'sentadilla' ? 5 : 4); }, 0) / 5) * 5;
+  },
+  orden: ['A', 'B', 'C'],
+  // rotación: continúa desde la última sesión registrada (o planificada) antes de la fecha
+  ultima(antesDe) {
+    const hechas = getActivities().filter(a => a.tipo === 'fuerza' && a.fuerza?.metodo === 'iso' && a.fecha.slice(0, 10) < antesDe).map(a => ({ f: a.fecha.slice(0, 10), r: a.fuerza.rutina }));
+    const plan = (PLAN.get()?.semanas || []).flatMap(w => w.sesiones.filter(s => s.iso?.rutina && s.fecha < antesDe).map(s => ({ f: s.fecha, r: s.iso.rutina })));
+    return [...hechas, ...plan].sort((x, y) => x.f.localeCompare(y.f)).at(-1)?.r || null;
+  },
+  sugerir(n, antesDe) {
+    const u = this.ultima(antesDe); let i = u ? this.orden.indexOf(u) + 1 : 0; const out = [];
+    for (let k = 0; k < n; k++) out.push(this.orden[(i + k) % 3]);
+    return out;
+  },
+  session(rut, extra = {}) {
+    if (!this.rutinas()[rut]) rut = 'A'; // rutina inexistente (datos antiguos o editados): se usa la A en vez de romper
+    const R = this.rutinas()[rut]; const min = this.minutos(rut);
+    return { deporte: 'fuerza', tipo: 'fuerza', titulo: `Fuerza · Rutina ${rut} (${R.nombre})`, objetivo: 'Activación de debilidades a baja intensidad (isometría con cinturón)',
+      calentamiento: '—', principal: R.ej.map(id => ISO[id]?.n).filter(Boolean).join(' · '), ritmo: 'Intensidad 3-4/10; si compensa, todavía menos', fc_limite: '—',
+      recuperaciones: ISO_PROTOCOLO, vuelta_calma: '—', duracion_min: min,
+      criterios: ['Activar sin fatigar: siempre algo de tensión, nunca esfuerzo alto.', 'Si entra otra musculatura, bajar la intensidad para aislar el músculo buscado.', 'Molestia de 4/10 o más, o dolor punzante: parar ese ejercicio.'],
+      reglas: ['C14', 'C2', 'A-FUE'], iso: { rutina: rut, ...extra } };
+  },
+
+  // ---------- Valoración: zonas prioritarias ----------
+  valoracion(semanas = 8) {
+    const desde = iso(addDays(UI.today(), -7 * semanas));
+    const ses = getActivities().filter(a => a.tipo === 'fuerza' && a.fuerza?.metodo === 'iso' && a.fecha.slice(0, 10) >= desde).sort((x, y) => x.fecha.localeCompare(y.fecha));
+    if (ses.length < 2) return { n: ses.length, insuficiente: true };
+    const U = {}; // por ejercicio + lado (las variantes se agregan al ejercicio)
+    ses.forEach(a => (a.fuerza.items || []).filter(it => it.hecho).forEach(it => {
+      const k = it.id + '|' + (it.lado || '-'); const u = U[k] = U[k] || { id: it.id, lado: it.lado, act: [], comp: 0, n: 0, mol: [], fechas: [] };
+      u.n++; if (it.activacion != null) u.act.push(+it.activacion); if (it.compensa) u.comp++; if ((it.molestia?.intensidad || 0) > 0) u.mol.push({ i: it.molestia.intensidad, f: a.fecha.slice(0, 10), m: it.molestia.momento });
+      u.fechas.push(a.fecha.slice(0, 10));
+    }));
+    const carrera = DIARIO.all().filter(e => e.tipo === 'molestia' && !e.origen_fuerza && e.fecha >= desde);
+    const avg = x => x.length ? x.reduce((s, v) => s + v, 0) / x.length : null;
+    const L = Object.values(U).map(u => {
+      const e = ISO[u.id]; const a = avg(u.act); const last = avg(u.act.slice(-3)); const first = avg(u.act.slice(0, 3));
+      const ladoTxt = u.lado === 'izq' ? 'izquierd' : u.lado === 'der' ? 'derech' : null;
+      const run = carrera.filter(m => e.kw.some(k => (m.zona || '').toLowerCase().includes(k)) && (!ladoTxt || !/(izquierd|derech)/i.test(m.zona || '') || (m.zona || '').toLowerCase().includes(ladoTxt)));
+      const motivos = []; let score = 0;
+      if (u.act.length >= 2 && last != null && last < 0.8) { score += 2; motivos.push(`apenas lo notas (activación media ${last.toFixed(1)} sobre 2 en las últimas sesiones)`); }
+      if (u.n >= 2 && u.comp / u.n >= 0.5) { score += 2; motivos.push(`compensas en ${u.comp} de ${u.n} sesiones`); }
+      if (u.mol.length >= 2) { score += 2; motivos.push(`molestia en ${u.mol.length} sesiones (máx. ${Math.max(...u.mol.map(m => m.i))}/10)`); } else if (u.mol.length === 1 && u.mol[0].i >= 4) { score += 1; motivos.push(`una molestia de ${u.mol[0].i}/10`); }
+      // la molestia al correr refuerza una señal del propio ejercicio, pero no la crea por sí sola
+      const runZ = [...new Set(run.map(m => m.zona))];
+      if (runZ.length && score > 0) { score += 2; motivos.push(`coincide con molestias al correr: ${runZ.join(', ')}`); }
+      const listo = u.n >= 6 && u.act.slice(-4).length === 4 && u.act.slice(-4).every(v => v >= 2) && u.comp === 0 && !u.mol.length;
+      return { ...u, e, a, last, first, score, motivos, listo, runZ, tendencia: first != null && last != null && u.act.length >= 4 ? (last - first >= 0.5 ? 'mejora' : last - first <= -0.5 ? 'empeora' : 'estable') : null };
+    });
+    // asimetrías entre lados del mismo ejercicio
+    const asim = [];
+    Object.values(L.reduce((m, x) => { if (x.lado) (m[x.id] = m[x.id] || []).push(x); return m; }, {})).forEach(p => {
+      if (p.length === 2 && p[0].last != null && p[1].last != null && Math.abs(p[0].last - p[1].last) >= 0.8) {
+        const [deb, fue] = p[0].last < p[1].last ? p : [p[1], p[0]];
+        deb.score += 1; deb.motivos.push(`activa peor que el lado ${fue.lado === 'izq' ? 'izquierdo' : 'derecho'}`); asim.push({ id: deb.id, debil: deb.lado });
+      }
+    });
+    const lado = x => x.lado === 'izq' ? ' izquierda' : x.lado === 'der' ? ' derecha' : '';
+    return {
+      n: ses.length, desde,
+      prioritarias: L.filter(x => x.score >= 2).sort((a, b) => b.score - a.score).map(x => ({ t: `${x.e.obj}${lado(x)} (${x.e.n})`, motivos: x.motivos, id: x.id, lado: x.lado })),
+      bien: L.filter(x => x.score < 2 && x.last != null && x.last >= 1.5).map(x => `${x.e.obj}${lado(x)}`),
+      listos: L.filter(x => x.listo).map(x => `${x.e.n}${lado(x)}`),
+      mejoran: L.filter(x => x.tendencia === 'mejora').map(x => `${x.e.n}${lado(x)}`),
+      vigilar: [...new Set(L.filter(x => x.score < 2 && x.runZ.length).flatMap(x => x.runZ))].map(z => ({ zona: z, ej: [...new Set(L.filter(x => x.runZ.includes(z)).map(x => x.e.n))] })),
+      asim
+    };
+  },
+
+  // ---------- Registro ----------
+  st: null,
+  openLog(sesId = null, rut = null, fecha = null) {
+    let ses = null; if (sesId) PLAN.get()?.semanas.forEach(w => w.sesiones.forEach(s => { if (s.id === sesId) ses = s; }));
+    rut = rut || ses?.iso?.rutina || this.sugerir(1, iso(addDays(UI.today(), 1)))[0];
+    this.st = { sesId, rut, fecha: fecha || ses?.fecha || UI.isoToday(), extra: [] };
+    let m = document.getElementById('iso-modal');
+    if (!m) { document.body.insertAdjacentHTML('beforeend', '<div class="modal-overlay" id="iso-modal" role="dialog" aria-modal="true" aria-labelledby="iso-title"><div class="modal" style="width:940px;max-width:96vw"><div id="iso-body"></div></div></div>'); m = document.getElementById('iso-modal'); m.onclick = e => { if (e.target === m) m.classList.remove('open'); }; }
+    m.classList.add('open'); this.renderLog();
+  },
+  renderLog() {
+    const st = this.st; const R = this.rutinas(); const ids = [...(R[st.rut]?.ej || []), ...st.extra];
+    const row = (e, u, k) => {
+      const lab = [u.variante, u.lado === 'izq' ? 'izquierda' : u.lado === 'der' ? 'derecha' : null].filter(Boolean).join(' · ');
+      const key = `${e.id}|${u.variante || ''}|${u.lado || ''}`;
+      const base = `<td><label class="ck"><input type="checkbox" data-iso="${k}.hecho" checked> ${UI.esc(lab || 'hecho')}</label></td>`;
+      if (e.prot === 'iso66') return `<tr data-k="${UI.esc(key)}">${base}<td><input class="form-input iso-n" type="number" min="0" max="10" value="3" data-iso="${k}.intensidad" aria-label="Intensidad"></td>
+        <td><select class="form-input iso-s" data-iso="${k}.activacion" aria-label="¿Notaste el músculo?"><option value="">—</option><option value="0">nada</option><option value="1">algo</option><option value="2">claramente</option></select></td>
+        <td><select class="form-input iso-s" data-iso="${k}.compensa" aria-label="¿Compensaste?"><option value="">no</option><option value="1">sí</option></select> <input class="form-input iso-t" data-iso="${k}.compensa_con" placeholder="¿con qué?"></td>
+        <td><input class="form-input iso-n" type="number" min="0" max="10" data-iso="${k}.mol_i" placeholder="0-10" aria-label="Molestia 0-10"> <select class="form-input iso-s" data-iso="${k}.mol_m" aria-label="Momento"><option value="durante">durante</option><option value="al terminar">al terminar</option><option value="al día siguiente">al día siguiente</option></select></td></tr>`;
+      if (e.prot === 'sentadilla') return `<tr data-k="${UI.esc(key)}">${base}<td colspan="2"><select class="form-input iso-s" data-iso="${k}.modo"><option value="6">protocolo de 6</option><option value="continuo">continuo</option></select> <input class="form-input iso-n" type="number" min="0" max="900" data-iso="${k}.tiempo_s" placeholder="s"> s</td>
+        <td><select class="form-input iso-s" data-iso="${k}.activacion"><option value="">quemazón: —</option><option value="0">poca</option><option value="1">media</option><option value="2">mucha</option></select></td>
+        <td><input class="form-input iso-n" type="number" min="0" max="10" data-iso="${k}.mol_i" placeholder="0-10"> <select class="form-input iso-s" data-iso="${k}.mol_m"><option value="durante">durante</option><option value="al terminar">al terminar</option><option value="al día siguiente">al día siguiente</option></select></td></tr>`;
+      return `<tr data-k="${UI.esc(key)}">${base}<td colspan="3"><input class="form-input iso-t" data-iso="${k}.reps" placeholder="${e.prot === 'reps' ? 'p. ej. 10, 8' : 'repeticiones'}"></td>
+        <td><input class="form-input iso-n" type="number" min="0" max="10" data-iso="${k}.mol_i" placeholder="0-10"> <select class="form-input iso-s" data-iso="${k}.mol_m"><option value="durante">durante</option><option value="al terminar">al terminar</option><option value="al día siguiente">al día siguiente</option></select></td></tr>`;
+    };
+    let k = 0; this.st.units = [];
+    const blocks = ids.map(id => { const e = ISO[id]; if (!e) return ''; const us = this.units(e);
+      return `<tbody><tr class="iso-h"><td colspan="5"><b>${UI.esc(e.n)}</b> <span class="text-muted" style="font-size:11px">${UI.esc(e.obj)} · ${e.prot === 'iso66' ? '2 rondas de 6×6/6' : e.prot === 'reps' ? UI.esc(e.reps) + ' lentas' : e.prot === 'core' ? 'repeticiones lentas' : 'lenta, sin bloquear arriba'}</span></td></tr>
+        ${us.map(u => { this.st.units.push({ id, ...u }); return row(e, u, k++); }).join('')}</tbody>`; }).join('');
+    const sinUsar = [...ISO_COMPLEMENTO, ...ISO_EJ.map(e => e.id)].filter((x, i, a) => a.indexOf(x) === i && !ids.includes(x));
+    document.getElementById('iso-body').innerHTML = `<h3 id="iso-title">Registrar sesión de fuerza</h3>
+      <div class="ui-sub" style="margin:-10px 0 12px">Por ejercicio y lado: intensidad usada (0-10), si notaste el músculo, si compensaste y si hubo molestia. Es lo que permite ver cómo van entrando las zonas débiles.</div>
+      <div class="grid-3"><div class="form-group"><label class="form-label" for="iso-fecha">Fecha</label><input class="form-input" type="date" id="iso-fecha" value="${st.fecha}"></div>
+        <div class="form-group"><label class="form-label" for="iso-rut">Rutina</label><select class="form-input" id="iso-rut" onchange="ISOF.st.rut=this.value;ISOF.st.extra=[];ISOF.renderLog()">${Object.entries(this.rutinas()).map(([r, x]) => `<option value="${r}" ${r === st.rut ? 'selected' : ''}>${r} · ${UI.esc(x.nombre)}</option>`).join('')}</select></div>
+        <div class="form-group"><label class="form-label" for="iso-min">Duración (min)</label><input class="form-input" type="number" id="iso-min" value="${this.minutos(st.rut)}"></div></div>
+      <div class="table-wrap" style="max-height:52vh;overflow:auto"><table class="iso-log"><thead><tr><th>Hecho</th><th>Intensidad</th><th>¿Lo notaste?</th><th>¿Compensaste?</th><th>Molestia</th></tr></thead>${blocks}</table></div>
+      <div class="flex gap-8" style="margin-top:8px;flex-wrap:wrap"><select class="form-input" id="iso-add" style="max-width:320px">${sinUsar.map(id => `<option value="${id}">${UI.esc(ISO[id].n)}</option>`).join('')}</select><button class="btn btn-ghost btn-sm" onclick="ISOF.st.extra.push(document.getElementById('iso-add').value);ISOF.renderLog()">Añadir ejercicio</button></div>
+      <div class="form-group" style="margin-top:8px"><label class="form-label" for="iso-notas">Notas</label><textarea class="form-input" id="iso-notas" rows="2"></textarea></div>
+      <div class="modal-footer"><button class="btn btn-secondary" onclick="document.getElementById('iso-modal').classList.remove('open')">Cancelar</button><button class="btn btn-primary" onclick="ISOF.saveLog()">Guardar sesión</button></div>`;
+  },
+  saveLog() {
+    const st = this.st; const g = (k, f) => document.querySelector(`[data-iso="${k}.${f}"]`);
+    const items = st.units.map((u, k) => {
+      const e = ISO[u.id]; const v = f => { const el = g(k, f); return el ? (el.type === 'checkbox' ? el.checked : el.value.trim()) : null; };
+      const mi = v('mol_i');
+      return { id: u.id, variante: u.variante, lado: u.lado, hecho: !!v('hecho'), intensidad: v('intensidad') !== null && v('intensidad') !== '' ? +v('intensidad') : null,
+        activacion: v('activacion') !== null && v('activacion') !== '' ? +v('activacion') : null, compensa: v('compensa') === '1', compensa_con: v('compensa_con') || null,
+        modo: v('modo') || null, tiempo_s: v('tiempo_s') ? +v('tiempo_s') : null, reps: v('reps') || null,
+        molestia: mi ? { intensidad: Math.min(10, +mi), momento: v('mol_m') || 'durante', zona: `${e.obj}${u.lado === 'izq' ? ' izquierda' : u.lado === 'der' ? ' derecha' : ''}` } : null };
+    });
+    const hechos = items.filter(i => i.hecho);
+    if (!hechos.length) return toast('Marca al menos un ejercicio como hecho');
+    const fecha = document.getElementById('iso-fecha').value || UI.isoToday(); const min = +document.getElementById('iso-min').value || this.minutos(st.rut);
+    const R = this.rutinas()[st.rut];
+    const act = { id: uid(), fecha: fecha + 'T18:00:00.000Z', tipo: 'fuerza', titulo: `Fuerza · Rutina ${st.rut}`, notas: document.getElementById('iso-notas').value.trim(), source: 'manual', distancia_km: 0, duracion_s: min * 60, serie: [], vueltas: [], quality: { overall: 'ok', issues: [] },
+      fuerza: { metodo: 'iso', rutina: st.rut, rutina_nombre: R?.nombre, sesion_plan: st.sesId, items, ejercicios: [...new Set(hechos.map(i => i.id))].map(id => { const m = hechos.filter(i => i.id === id && i.molestia).sort((x, y) => y.molestia.intensidad - x.molestia.intensidad)[0]; return { id, iso: true, series: [], molestia: m ? { zona: m.molestia.zona, intensidad: m.molestia.intensidad } : null }; }), rpe_sesion: null } };
+    const acts = getActivities(); acts.push(act); saveActivities(acts); try { _engCache.clear(); } catch { }
+    // molestias de 4/10 o más: quedan en el diario (las ve la revisión y la seguridad) y se avisa
+    const fuertes = hechos.filter(i => (i.molestia?.intensidad || 0) >= 4);
+    fuertes.forEach(i => DIARIO.add({ tipo: 'molestia', fecha, zona: i.molestia.zona, intensidad: i.molestia.intensidad, origen_fuerza: true, notas: `En ${ISO[i.id].n}${i.variante ? ' (' + i.variante + ')' : ''}, ${i.molestia.momento}` }));
+    document.getElementById('iso-modal').classList.remove('open');
+    toast(fuertes.length ? `Sesión guardada. Molestia de 4/10 o más en ${fuertes.map(i => ISO[i.id].n).join(', ')}: para ese ejercicio hasta que ceda y, si se repite, consúltalo con un fisioterapeuta.` : 'Sesión de fuerza guardada', fuertes.length ? 9000 : 3000);
+    if (currentView === 'fuerza') renderFuerza(); else UI.views[currentView]?.();
+  },
+
+  // ---------- Vistas ----------
+  fichaHtml(e) {
+    return `<details class="iso-ficha"><summary><b>${UI.esc(e.n)}</b> <span class="text-muted">· ${UI.esc(e.obj)}${e.var ? ' · ' + e.var.map(UI.esc).join(' / ') : ''}${e.lados === 'cada' ? ' · cada lado' : ''}</span></summary>
+      <div class="iso-det"><div><b>Posición:</b> ${UI.esc(e.pos)}</div><div><b>Contracción:</b> ${UI.esc(e.cont)}</div>${e.rel !== '—' ? `<div><b>Relajación:</b> ${UI.esc(e.rel)}</div>` : ''}
+      <div><b>Pauta:</b> ${e.prot === 'iso66' ? ISO_PROTOCOLO : e.prot === 'reps' ? UI.esc(e.reps) + ', ejecución lenta' : e.prot === 'core' ? 'Repeticiones lentas a un lado y al otro, hasta notar algo de esfuerzo' : 'Inicial: protocolo de 6, lento. Avanzado: continuo hasta unos 3 min'}</div>
+      ${e.vig !== '—' ? `<div><b>Vigilar:</b> ${UI.esc(e.vig)}</div>` : ''}<div class="text-muted" style="font-size:11px">Fuente: ${UI.esc(ISO_FUENTES[e.fuente])}${e.id === 'sentadilla' ? ' · nivel avanzado: ' + ISO_FUENTES.propia : ''}</div></div></details>`;
+  },
+  valoracionHtml() {
+    const V = this.valoracion();
+    if (V.insuficiente) return `<div class="text-muted" style="font-size:12.5px">Registra al menos 2 sesiones para que el entrenador pueda valorar las zonas (llevas ${V.n}). Lo que más ayuda: anotar en cada ejercicio si lo notaste, si compensaste y cualquier molestia.</div>`;
+    return `<div class="text-muted" style="font-size:11.5px;margin-bottom:6px">${V.n} sesiones desde ${fmtD(V.desde)}. No es un diagnóstico: cruza lo que anotas en cada ejercicio con las molestias que registras al correr. Decides tú qué cambiar.</div>
+      <div class="form-label">Zonas a reforzar</div>${V.prioritarias.length ? V.prioritarias.map(p => `<div class="ui-alert warn" style="margin:4px 0;font-size:12.5px"><b>${UI.esc(p.t)}</b>: ${p.motivos.map(UI.esc).join('; ')}.</div>`).join('') : '<div class="text-muted" style="font-size:12.5px">Ninguna destaca con los datos actuales.</div>'}
+      ${V.vigilar.length ? `<div class="form-label" style="margin-top:8px">Molestias al correr en zonas que trabajas</div>${V.vigilar.map(v => `<div style="font-size:12.5px">${UI.esc(v.zona)}: en ${v.ej.map(UI.esc).join(', ')} no se ve ninguna señal (activas bien, sin compensar ni molestias). Si la molestia se repite, cuéntaselo al entrenador o a un fisioterapeuta.</div>`).join('')}` : ''}
+      ${V.bien.length ? `<div class="form-label" style="margin-top:8px">Activan bien</div><div style="font-size:12.5px">${V.bien.map(UI.esc).join(' · ')}</div>` : ''}
+      ${V.mejoran.length ? `<div class="form-label" style="margin-top:8px">Van entrando (mejora la activación)</div><div style="font-size:12.5px">${V.mejoran.map(UI.esc).join(' · ')}</div>` : ''}
+      ${V.listos.length ? `<div class="ui-alert" style="margin-top:8px;font-size:12.5px">Llevan 4 sesiones seguidas notándose claramente, sin compensar ni molestias: <b>${V.listos.map(UI.esc).join(', ')}</b>. Podrías plantearte la alta intensidad (1 min: 25-50-75-100 %) en ellos. Es decisión tuya.</div>` : ''}`;
+  }
+};
+
+(function () {
+  // Vista Fuerza: el método isométrico; el catálogo anterior queda plegado y desactivado
+  const rf0 = renderFuerza;
+  renderFuerza = function () {
+    rf0.apply(this, arguments);
+    const el = document.getElementById('fuerza-body'); if (!el) return;
+    const old = el.innerHTML; const R = ISOF.rutinas(); const sug = ISOF.sugerir(2, iso(addDays(UI.today(), 1)));
+    const hist = getActivities().filter(a => a.tipo === 'fuerza' && a.fuerza?.metodo === 'iso').sort((x, y) => y.fecha.localeCompare(x.fecha)).slice(0, 8);
+    el.innerHTML = `
+      <div class="card mb-16"><div class="flex-between" style="gap:12px;flex-wrap:wrap"><div><div class="card-title" style="margin:0">Tu método: isometría con cinturón a baja intensidad</div>
+        <div style="font-size:12.5px;margin-top:4px">${ISO_PROTOCOLO}. Intensidad 3-4/10; si entra otra musculatura, todavía menos. Se busca activar las debilidades sin generar fatiga. La alta intensidad (1 min: 25-50-75-100 %) sólo cuando tú lo decidas. <span class="eng-rule">C14</span></div></div>
+        <div class="flex gap-8"><button class="btn btn-primary btn-sm" onclick="ISOF.openLog()">Registrar sesión</button></div></div>
+        <div class="text-muted" style="font-size:12px;margin-top:6px">Por rotación te tocan ahora: <b>rutina ${sug[0]}</b> y después la <b>${sug[1]}</b>.</div></div>
+      <div class="grid-3 iso-ruts">${Object.entries(R).map(([r, x]) => `<div class="card mb-16"><div class="flex-between"><div class="card-title" style="margin:0">Rutina ${r} · ${UI.esc(x.nombre)}</div><span class="text-muted" style="font-size:11.5px">≈ ${ISOF.minutos(r)} min</span></div>
+        ${x.ej.map(id => ISO[id] ? ISOF.fichaHtml(ISO[id]) : '').join('')}<button class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="ISOF.openLog(null,'${r}')">Registrar rutina ${r}</button></div>`).join('')}</div>
+      <div class="card mb-16"><div class="card-title">Complemento opcional: tren superior</div>${ISO_COMPLEMENTO.map(id => ISOF.fichaHtml(ISO[id])).join('')}</div>
+      <div class="grid-2"><div class="card mb-16"><div class="card-title">Valoración del entrenador: zonas</div>${ISOF.valoracionHtml()}</div>
+        <div class="card mb-16"><div class="card-title">Últimas sesiones</div>${hist.map(a => { const it = a.fuerza.items.filter(i => i.hecho); const act = it.filter(i => i.activacion != null); const mol = it.filter(i => i.molestia); return `<div class="lib-log-line"><a href="#" onclick="navigate('actividad','${a.id}');return false">${fmtD(a.fecha.slice(0, 10))} · Rutina ${a.fuerza.rutina}</a> · ${it.length} bloques${act.length ? ` · activación media ${(act.reduce((s, i) => s + i.activacion, 0) / act.length).toFixed(1)}/2` : ''}${it.some(i => i.compensa) ? ` · compensaste en ${it.filter(i => i.compensa).length}` : ''}${mol.length ? ` · <span style="color:var(--yellow)">molestias: ${mol.map(i => UI.esc(i.molestia.zona) + ' ' + i.molestia.intensidad + '/10').join(', ')}</span>` : ''}</div>`; }).join('') || '<div class="text-muted" style="font-size:12.5px">Todavía no hay sesiones con este método.</div>'}</div></div>
+      <details class="card"><summary style="cursor:pointer"><b>Catálogo anterior (desactivado)</b> <span class="text-muted" style="font-size:12px">— ejercicios genéricos con material; el plan no los usa</span></summary>
+        <div class="form-group" style="margin-top:8px;max-width:420px"><label class="form-label" for="iso-met">Fuerza en el plan del entrenador</label><select class="form-input" id="iso-met" onchange="DB.set('fuerza_metodo',this.value);toast('Guardado. Afecta a las semanas que se generen a partir de ahora.')"><option value="iso" ${ISOF.metodo() === 'iso' ? 'selected' : ''}>Isometría con cinturón (tu método)</option><option value="catalogo" ${ISOF.metodo() === 'catalogo' ? 'selected' : ''}>Catálogo anterior</option></select></div>
+        <div style="margin-top:8px">${old}</div></details>`;
+  };
+  // Plan del entrenador: sesiones de fuerza con las rutinas (rotación por semanas)
+  const b0 = STRENGTH.build.bind(STRENGTH);
+  STRENGTH.build = function (week, atleta, o = {}) {
+    if (ISOF.metodo() !== 'iso') return b0(week, atleta, o);
+    const w = Math.round((new Date(week.inicio + 'T12:00:00') - new Date('2026-01-05T12:00:00')) / (7 * 864e5));
+    const rut = ISOF.orden[(((w * 2 + (o.variante || 0)) % 3) + 3) % 3];
+    return ISOF.session(rut);
+  };
+  // Análisis de una sesión registrada con el método
+  const an0 = STRENGTH.analyze.bind(STRENGTH);
+  STRENGTH.analyze = function (act) {
+    if (act?.fuerza?.metodo !== 'iso') return an0(act);
+    const it = act.fuerza.items.filter(i => i.hecho);
+    return { iso: true, ejercicios: new Set(it.map(i => i.id)).size, series: it.length * 2, tonelaje_kg: 0, grupos: {}, grupos_sin_trabajo: [], rpe: null, srpe: null,
+      molestias: it.filter(i => i.molestia).map(i => `${ISO[i.id]?.n || i.id}: ${i.molestia.intensidad}/10 (${i.molestia.zona}, ${i.molestia.momento})`) };
+  };
+  const ah0 = strActivityHtml;
+  strActivityHtml = function (act) {
+    if (act?.fuerza?.metodo !== 'iso') return ah0(act);
+    const it = act.fuerza.items.filter(i => i.hecho);
+    return `<div class="eng-sec"><div class="eng-sec-h"><span>💪</span>Fuerza · Rutina ${UI.esc(act.fuerza.rutina)} (${UI.esc(act.fuerza.rutina_nombre || '')})</div>
+      <div class="text-muted" style="font-size:12px;margin-bottom:6px">${ISO_PROTOCOLO}. Datos declarados por ti.</div>
+      <table class="co-ej">${it.map(i => `<tr><td>${UI.esc(ISO[i.id]?.n || i.id)}${i.variante ? ' · ' + UI.esc(i.variante) : ''}${i.lado ? ' · ' + (i.lado === 'izq' ? 'izq.' : 'der.') : ''}</td>
+        <td>${i.intensidad != null ? 'int. ' + i.intensidad + '/10' : i.tiempo_s ? i.tiempo_s + ' s' : UI.esc(i.reps || '')}</td><td>${i.activacion != null ? (ISO[i.id]?.prot === 'sentadilla' ? 'quemazón ' : 'notado: ') + ['nada', 'algo', 'claramente'][i.activacion] : '—'}</td>
+        <td>${i.compensa ? 'compensó' + (i.compensa_con ? ' (' + UI.esc(i.compensa_con) + ')' : '') : ''}</td><td>${i.molestia ? `<span style="color:var(--yellow)">molestia ${i.molestia.intensidad}/10 ${UI.esc(i.molestia.momento)}</span>` : ''}</td></tr>`).join('')}</table>
+      ${act.notas ? `<div style="font-size:12.5px;margin-top:6px">${UI.esc(act.notas)}</div>` : ''}</div>`;
+  };
+  // Tarjeta de sesión en el plan
+  const sc0 = sessionCard;
+  sessionCard = function (s) {
+    if (!s.iso) return sc0(s);
+    const R = ISOF.rutinas()[s.iso.rutina];
+    return `<div class="co-ses co-f"><div class="flex-between"><b>${UI.esc(s.titulo)}</b><span class="text-muted" style="font-size:11px">${s.duracion_min ? s.duracion_min + ' min' : ''}</span></div>
+      <div style="font-size:11.5px;color:var(--text2);margin:2px 0 4px">${s.iso.sugerida ? 'Rutina sugerida por rotación · ' : ''}baja intensidad, sin fatiga</div>
+      <details><summary style="font-size:11px;color:var(--accent);cursor:pointer">Ejercicios</summary><div class="co-det">${(R?.ej || []).map(id => ISO[id] ? `<div>• ${UI.esc(ISO[id].n)}${ISO[id].var ? ' (' + ISO[id].var.join(' / ') + ')' : ''}</div>` : '').join('')}
+        <div class="text-muted" style="margin-top:4px">${ISO_PROTOCOLO}</div><div>${(s.reglas || []).map(r => `<span class="eng-rule">${r}</span>`).join(' ')}</div>
+        <button class="btn btn-secondary btn-sm" style="margin-top:4px" onclick="ISOF.openLog('${s.id}')">Registrar</button></div></details></div>`;
+  };
+  // Mi semana: la fuerza que dictes usa tus rutinas; si no dices cuál, se sugiere por rotación
+  const ts0 = MIWK.toSession.bind(MIWK);
+  MIWK.toSession = function (x, ini, a) {
+    const s = ts0(x, ini, a);
+    if (s.deporte !== 'fuerza') return s;
+    const r = /^[ABC]$/.test(x.rutina || '') ? x.rutina : null;
+    return { ...s, ...ISOF.session(r || 'A', { sugerida: !r }), id: s.id, fecha: s.fecha, dia: s.dia, propia: true, _src: s._src, _sinRutina: !r };
+  };
+  const in0 = MIWK.interpret.bind(MIWK);
+  MIWK.interpret = async function (text, ini, draft) {
+    const r = await in0(text, ini, draft);
+    const sin = r.sesiones.filter(s => s._sinRutina);
+    if (sin.length) { const sug = ISOF.sugerir(sin.length, ini); sin.forEach((s, k) => { Object.assign(s, ISOF.session(sug[k], { sugerida: true }), { id: s.id, fecha: s.fecha, dia: s.dia, propia: true }); s._src = { ...s._src, rutina: sug[k] }; delete s._sinRutina; }); }
+    return r;
+  };
+  MIWK.setRut = function (k, r) { const s = this.st.sesiones[k]; Object.assign(s, ISOF.session(r), { id: s.id, fecha: s.fecha, dia: s.dia, propia: true }); s._src = { ...s._src, rutina: r }; this.st.avisos = this.check(this.st.ini, this.st.sesiones); this.render(); };
+  MIWK.addFuerza = function () {
+    const st = this.st; const ses = st.sesiones || (st.sesiones = []);
+    const n = Math.max(0, 2 - ses.filter(s => s.deporte === 'fuerza').length); if (!n) return toast('Ya tienes 2 sesiones de fuerza esta semana');
+    const hard = ses.filter(s => MIWK_HARD.includes(s.tipo)).map(s => s.dia); const usados = ses.filter(s => s.deporte === 'fuerza').map(s => s.dia);
+    // días sin calidad, que no sean víspera de calidad, separados entre sí
+    const cand = [0, 1, 2, 3, 4, 5, 6].filter(d => !hard.includes(d) && !hard.includes(d + 1) && !usados.includes(d)).sort((x, y) => (ses.some(s => s.dia === x && s.tipo === 'tirada_larga') ? 1 : 0) - (ses.some(s => s.dia === y && s.tipo === 'tirada_larga') ? 1 : 0));
+    const dias = []; for (const d of cand) { if (dias.length >= n) break; if ([...dias, ...usados].every(x => Math.abs(x - d) >= 2)) dias.push(d); }
+    if (!dias.length) return toast('No hay ningún día sin calidad que no sea la víspera de una calidad: añádela tú dictando el día.', 5000);
+    const sug = ISOF.sugerir(dias.length, st.ini);
+    dias.forEach((d, k) => ses.push({ ...ISOF.session(sug[k], { sugerida: true }), id: libId('ses'), dia: d, fecha: iso(addDays(st.ini, d)), propia: true, _src: { dia: d, deporte: 'fuerza', tipo: 'fuerza', rutina: sug[k], titulo: 'Fuerza' } }));
+    ses.sort((x, y) => x.dia - y.dia); st.avisos = this.check(st.ini, ses); this.render();
+  };
+  const ck0 = MIWK.check.bind(MIWK);
+  MIWK.check = function (ini, ses) {
+    const out = ck0(ini, ses).filter(x => !x.reglas.includes('A-FUE'));
+    const hard = ses.filter(s => MIWK_HARD.includes(s.tipo)).map(s => s.dia);
+    ses.filter(s => s.deporte === 'fuerza').forEach(f => {
+      if (!hard.includes(f.dia + 1)) return;
+      const conSent = (ISOF.rutinas()[f.iso?.rutina]?.ej || []).includes('sentadilla');
+      out.push(conSent ? { nivel: 'aviso', t: `Fuerza el ${DIAS[f.dia].toLowerCase()} (rutina ${f.iso.rutina}, con sentadilla lenta), víspera de una calidad.`, reglas: ['A-FUE'] }
+        : { nivel: 'info', t: `Fuerza el ${DIAS[f.dia].toLowerCase()}, víspera de una calidad. Es isometría a baja intensidad, pero A-FUE pide no hacer fuerza la víspera: decide tú.`, reglas: ['A-FUE'] });
+    });
+    const nF = ses.filter(s => s.deporte === 'fuerza').length;
+    if (nF && nF !== 2) out.push({ nivel: 'info', t: `${nF} sesión(es) de fuerza esta semana; tu referencia son 2.`, reglas: ['C2'] });
+    return out;
+  };
+  // en la tabla del editor: selector de rutina en las filas de fuerza y botón de fuerza sugerida
+  const r0 = MIWK.render.bind(MIWK);
+  MIWK.render = function () {
+    r0();
+    const st = this.st; if (!st?.sesiones) return;
+    document.querySelectorAll('.miwk-t tbody tr').forEach((tr, k) => {
+      const s = st.sesiones[k]; if (!s || s.deporte !== 'fuerza') return;
+      const td = tr.children[1]; if (!td) return;
+      td.innerHTML = `<b>Fuerza</b><div><select class="form-input" style="padding:3px;font-size:12px" onchange="MIWK.setRut(${k}, this.value)" aria-label="Rutina">${Object.entries(ISOF.rutinas()).map(([r, x]) => `<option value="${r}" ${s.iso?.rutina === r ? 'selected' : ''}>Rutina ${r} · ${UI.esc(x.nombre)}</option>`).join('')}</select></div>${s.iso?.sugerida ? '<div class="text-muted" style="font-size:10.5px">sugerida por rotación</div>' : ''}`;
+      if (tr.children[2]) tr.children[2].textContent = (ISOF.rutinas()[s.iso?.rutina]?.ej || []).map(id => ISO[id]?.n).join(' · ');
+    });
+    const t = document.querySelector('#miwk-body .miwk-t'); if (!t || document.getElementById('miwk-fz')) return;
+    const nF = st.sesiones.filter(s => s.deporte === 'fuerza').length; const sug = ISOF.sugerir(2, st.ini);
+    t.closest('.table-wrap').insertAdjacentHTML('afterend', `<div id="miwk-fz" class="flex gap-8" style="margin-top:6px;align-items:center;flex-wrap:wrap;font-size:12.5px"><span>Fuerza: por rotación te tocan las rutinas <b>${sug.join(' y ')}</b>.</span>${nF < 2 ? '<button class="btn btn-secondary btn-sm" onclick="MIWK.addFuerza()">Añadir la fuerza sugerida</button>' : ''}</div>`);
   };
 })();
 
