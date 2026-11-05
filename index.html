@@ -4099,6 +4099,10 @@ const ENG_DOC = [
     supuestos: 'Las vueltas automáticas por km se tratan como un esfuerzo continuo.',
     limitaciones: 'Depende de que las vueltas estén bien marcadas en el reloj.',
     fuente: 'Criterios de A-FAT y de "series largas con base de rodaje" (deterioro del último km).' },
+  { id: 'CARGA', nombre: 'Carga crónica y aguda (CTL, ATL, cociente)',
+    formula: 'CTL y ATL = medias exponenciales del TRIMP diario con constantes de 42 y 7 días. Arrancan el primer día con actividades, con la media diaria de las 4 primeras semanas (no desde cero). Cociente agudo/crónico = media de ATL/CTL de los últimos 7 días.',
+    variables: 'TRIMP diario de carrera, ciclismo y multideporte.',
+    limitaciones: 'Antes de tu primera actividad importada no hay datos: el sistema no puede saber si descansaste o simplemente no importaste. Por eso arranca en la media de tus primeras semanas. El cociente se promedia en 7 días para que la misma semana de entrenamiento no se valore distinto un lunes que un jueves.' },
   { id: 'PATRON', nombre: 'Patrones (señal aislada vs patrón)',
     formula: 'Una señal es "observación" con 1 aparición; pasa a "patrón" con ≥ 2 apariciones en 14 días o 2 semanas seguidas',
     variables: 'Carga (TRIMP 7 d vs media de 4 semanas), FC de rodaje en sesiones equivalentes, EF, distribución de zonas, contexto declarado.',
@@ -4138,6 +4142,7 @@ const ENG = {
       const moving = !(s[i].sp != null && s[i].sp < 1.5 && !s[i].pw);
       out.push({ ...s[i], dt: dt > cap ? 0 : dt, el: (s[i].t - s[0].t) / 1000, moving, hrOk: s[i].hr && s[i].hr >= 30 && s[i].hr <= 230 });
     }
+    ENG.hrArtifacts(out);
     return out;
   },
   out(sport, p) { return sport === 'ciclismo' ? (p.pw || null) : (p.sp ? p.sp * 1000 / 60 : null); },     // carrera: m/min
@@ -4254,6 +4259,18 @@ const ENG = {
   }
 };
 
+// CTL/ATL compartido: arranca en el primer día con carga, sembrado con la media diaria de las 4 primeras semanas.
+// keys: fechas ordenadas; val(k): carga del día. Devuelve [{ k, v, ctl, atl }] (antes del primer dato, 0).
+function pmcSerie(keys, val) {
+  const a1 = 1 - Math.exp(-1 / 42), a7 = 1 - Math.exp(-1 / 7);
+  const vs = keys.map(k => val(k) || 0); const i0 = vs.findIndex(v => v > 0); const out = [];
+  if (i0 < 0) return keys.map((k, i) => ({ k, v: vs[i], ctl: 0, atl: 0 }));
+  const w = vs.slice(i0, i0 + 28); const seed = w.reduce((s, v) => s + v, 0) / w.length;
+  let ctl = seed, atl = seed;
+  keys.forEach((k, i) => { if (i < i0) return out.push({ k, v: vs[i], ctl: 0, atl: 0 }); ctl += (vs[i] - ctl) * a1; atl += (vs[i] - atl) * a7; out.push({ k, v: vs[i], ctl, atl }); });
+  return out;
+}
+
 const paceToSec = s => { if (!s) return null; const m = String(s).match(/(\d+)[:'´](\d{1,2})/); return m ? +m[1] * 60 + +m[2] : null; };
 // ============================================================
 // MOTOR — vueltas, tipo de sesión, objetivo y contexto
@@ -4278,13 +4295,14 @@ ENG.laps = function (act, ser) {
     const dur = l.total_timer_time || null;
     const spd = l.avg_speed || (l.total_distance && dur ? l.total_distance * 1000 / dur : null);   // m/s
     // FC al inicio y al final del tramo desde la serie
-    let hrIni = null, hrFin = null;
+    let hrIni = null, hrFin = null, hrMaxS = null;
     if (st && dur && ser.length) {
       const inW = ser.filter(p => p.t >= st && p.t < st + dur * 1000 && p.hrOk);
-      if (inW.length >= 2) { hrIni = inW[0].hr; hrFin = mean(inW.slice(-2).map(p => p.hr)); }
+      if (inW.length >= 2) { hrIni = inW[0].hr; hrFin = mean(inW.slice(-2).map(p => p.hr)); hrMaxS = ENG.hrSustained(inW); }
     }
+    const capReal = +act.contexto?.fc_max_real || null;
     return { n: i + 1, st, dur, km: l.total_distance ?? null, v: spd, ritmo_s: spd ? 1000 / spd : null,
-      fc: l.avg_heart_rate || null, fcmax: l.max_heart_rate || null, cad: l.avg_cadence || null, pot: l.avg_power || null,
+      fc: l.avg_heart_rate || null, fcmax: (() => { const m = hrMaxS ?? l.max_heart_rate ?? null; return m && capReal ? Math.min(m, capReal) : m; })(), fcmax_reloj: l.max_heart_rate || null, cad: l.avg_cadence || null, pot: l.avg_power || null,
       fcIni: hrIni, fcFin: hrFin, tipo: l._lap_type || null };
   }).filter(l => l.dur && l.dur > 15);
   if (L.length < 2) return { estructura: 'sin_vueltas', laps: L, mensaje: L.length ? 'Una sola vuelta: no hay intervalos que comparar.' : 'La actividad no tiene vueltas registradas.' };
@@ -4500,7 +4518,7 @@ ENG.analyze = function (act, all = null) {
       potencia_media: { v: act.potencia_media || null, src: 'medido', unidad: 'W' }, potencia_np: { v: act.potencia_np || null, src: 'calculado', unidad: 'W' },
       cadencia: { v: act.cadencia_media || null, src: 'medido' }, desnivel: { v: act.desnivel_pos ?? null, src: 'medido', unidad: 'm' }
     },
-    cardiaco: { fc_media: { v: act.fc_media || null, src: 'medido' }, fc_max: { v: act.fc_max || null, src: 'medido' } },
+    cardiaco: { fc_media: { v: act.fc_media || null, src: 'medido' }, fc_max: (() => { const M = ENG.hrMaxAct(act, ser); return { v: M.v, src: M.src, reloj: M.reloj, picos: M.picos, nota: M.nota }; })() },
     zonas: zd, trimp: tr, segmento: seg, deriva: this.derivaVerdict(seg),
     ef: seg?.ok ? { v: seg.ef, src: 'calculado', base: 'tramo estable de ' + seg.dur_min + ' min' } : (() => { const v = this.efWhole(act, ser); return v ? { v, src: 'estimado', base: 'toda la sesión tras 10 min (sin tramo estable)' } : null; })(),
     vueltas: lapsA, cumplimiento: null, contexto: null
@@ -4636,11 +4654,9 @@ ENG.patterns = function (all, end = new Date()) {
   // 6. Fatiga acumulada: ATL/CTL con TRIMP diario + fatiga declarada
   const days = {}; sorted.forEach(a => { const d = a.fecha.slice(0, 10); days[d] = (days[d] || 0) + (this.analyze(a).trimp.v || 0); });
   if (sorted.length) {
-    let ctl = 0, atl = 0; const start = new Date(sorted[0].fecha.slice(0, 10)); const pmc = [];
-    for (let d = new Date(start); d <= new Date(end); d.setDate(d.getDate() + 1)) {
-      const k = d.toISOString().slice(0, 10), x = days[k] || 0;
-      ctl += (x - ctl) * (1 - Math.exp(-1 / 42)); atl += (x - atl) * (1 - Math.exp(-1 / 7)); pmc.push({ k, ctl, atl });
-    }
+    const start = new Date(sorted[0].fecha.slice(0, 10)); const ks = [];
+    for (let d = new Date(start); d <= new Date(end); d.setDate(d.getDate() + 1)) ks.push(d.toISOString().slice(0, 10));
+    const pmc = pmcSerie(ks, k => days[k]).map(({ k, ctl, atl }) => ({ k, ctl, atl }));
     pmc.slice(-21).forEach(p => { if (p.ctl > 20 && p.atl / p.ctl > 1.3) sig('fatiga_acumulada', p.k, `Carga aguda/crónica ${(p.atl / p.ctl).toFixed(2)} (TRIMP 7 d / 42 d)`, ['A-TRIMP']); });
     this._pmc = pmc;
   }
@@ -4755,7 +4771,7 @@ function engReportHtml(R) {
   h += sec(1, 'Resumen', `<div style="font-size:13px">${tipoTxt}</div>
     <div class="eng-kv"><div><span>Distancia</span>${v(A.externo.distancia_km, ' km')}</div><div><span>Duración</span>${v(A.externo.duracion_min, ' min')}</div>
     ${A.sport === 'carrera' ? `<div><span>Ritmo medio</span>${v(A.externo.ritmo_medio)}</div>` : `<div><span>Potencia NP</span>${v(A.externo.potencia_np)}</div>`}
-    <div><span>FC media / máx</span>${A.cardiaco.fc_media.v ? `${A.cardiaco.fc_media.v} / ${A.cardiaco.fc_max.v ?? '—'} ppm ${srcTag('medido')}` : '<span class="text-muted">sin FC</span>'}</div>
+    <div><span>FC media / máx</span>${A.cardiaco.fc_media.v ? `${A.cardiaco.fc_media.v} / ${A.cardiaco.fc_max.v ?? '—'} ppm ${srcTag(A.cardiaco.fc_max.src === 'declarado' ? 'declarado' : 'medido')}${A.cardiaco.fc_max.nota ? `<div class="text-muted" style="font-size:11px">${TXT.esc(A.cardiaco.fc_max.nota)}</div>` : ''}` : '<span class="text-muted">sin FC</span>'}</div>
     <div><span>TRIMP</span>${A.trimp.v != null ? `${A.trimp.v} ${srcTag(A.trimp.src)}` : `<span class="text-muted">${TXT.esc(A.trimp.nota)}</span>`}</div>
     <div><span>Eficiencia (EF)</span>${A.ef ? `${A.ef.v} ${srcTag(A.ef.src)}` : '<span class="text-muted">—</span>'}</div></div>
     <div style="font-size:13px;margin-top:6px">${R.prob.length ? `<b>${R.prob.length}</b> aspecto(s) a revisar` : 'Sin problemas detectados'} · <b>${R.pos.length}</b> positivo(s) · <b>${R.recs.length}</b> recomendación(es).</div>`);
@@ -6779,8 +6795,7 @@ UI.load = {
   },
   pmc(to = UI.isoToday(), days = 120) {
     const from = iso(addDays(to, -days - 42)); const m = this.daily(from, to);
-    let ctl = 0, atl = 0; const out = [];
-    Object.keys(m).sort().forEach(k => { const t = m[k].trimp; ctl += (t - ctl) * (1 - Math.exp(-1 / 42)); atl += (t - atl) * (1 - Math.exp(-1 / 7)); out.push({ fecha: k, trimp: t, ctl: Math.round(ctl), atl: Math.round(atl), tsb: Math.round(ctl - atl) }); });
+    const out = pmcSerie(Object.keys(m).sort(), k => m[k].trimp).map(x => ({ fecha: x.k, trimp: x.v, ctl: Math.round(x.ctl), atl: Math.round(x.atl), tsb: Math.round(x.ctl - x.atl) }));
     return out.slice(-days);
   },
   hasTrimp() { const p = getPerfil(); return !!(p.fcmax && p.fcmin); }
@@ -7300,7 +7315,7 @@ function renderActividad(id) {
     t('Distancia', a.distancia_km ? a.distancia_km.toFixed(2) + '<span class="stat-unit">km</span>' : '—'),
     t('Tiempo en movimiento', fmtDur(a.duracion_s), a.duracion_elapsed_s && a.duracion_elapsed_s !== a.duracion_s ? `total ${fmtDur(a.duracion_elapsed_s)}` : ''),
     t(isRun ? 'Ritmo medio' : 'Velocidad media', isRun ? fmtPace(a.velocidad_media) + '<span class="stat-unit">/km</span>' : ((a.velocidad_media || 0) * 3.6).toFixed(1) + '<span class="stat-unit">km/h</span>'),
-    t('FC media / máx', a.fc_media ? `${a.fc_media}<span class="stat-unit">/ ${a.fc_max || '—'} ppm</span>` : '—', a.fc_media ? '' : 'sin pulsómetro'),
+    t('FC media / máx', a.fc_media ? `${a.fc_media}<span class="stat-unit">/ ${ENG.hrMaxAct(a).v || '—'} ppm</span>` : '—', a.fc_media ? (ENG.hrMaxAct(a).nota ? 'picos breves descartados' : '') : 'sin pulsómetro'),
     t('Carga (TRIMP)', A?.trimp.v ?? '—', A?.trimp.v != null ? 'Banister, calculado' : UI.esc(A?.trimp.nota || '')),
     t('Cadencia media', cad),
     t('Potencia media / NP', a.potencia_media || a.potencia_np ? `${a.potencia_media || '—'}<span class="stat-unit">/ ${a.potencia_np || '—'} W</span>` : '—'),
@@ -7933,14 +7948,17 @@ const ASIM = {
   dailyTrimp(end, days) { const m = {}; for (let d = addDays(D8(end), -days + 1); iso(d) <= iso(end); d = addDays(d, 1)) m[iso(d)] = 0; getActivities().forEach(a => { const k = a.fecha.slice(0, 10); if (k in m && ['carrera', 'ciclismo', 'duatlon'].includes(a.tipo)) m[k] += ENG.analyze(a).trimp.v || 0; }); return m; },
   loadIndicator(end) {
     const p = getPerfil(); if (!(p.fcmax && p.fcmin)) return this.ind('sin_datos', ['Sin FC máxima y de reposo no se calcula el TRIMP: la carga no se puede cuantificar.'], { evidencia: '—', n: 0 });
-    const m = this.dailyTrimp(end, 160); let ctl = 0, atl = 0; const ks = Object.keys(m).sort(); const hist = [];
-    ks.forEach(k => { ctl += (m[k] - ctl) * (1 - Math.exp(-1 / 42)); atl += (m[k] - atl) * (1 - Math.exp(-1 / 7)); hist.push({ k, ctl, atl }); });
+    const m = this.dailyTrimp(end, 160); const ks = Object.keys(m).sort(); const hist = pmcSerie(ks, k => m[k]); const ctl = hist.at(-1)?.ctl || 0, atl = hist.at(-1)?.atl || 0;
     const wk = i => ks.slice(-7 * (i + 1), ks.length - 7 * i).reduce((s, k) => s + m[k], 0);
     const w = [3, 2, 1, 0].map(wk).map(Math.round); const prev4 = [7, 6, 5, 4].map(wk); const avgPrev = prev4.reduce((a, b) => a + b, 0) / 4;
-    const ratio = ctl > 0 ? atl / ctl : null; const dias13 = hist.slice(-14).filter(h => h.ctl > 15 && h.atl / h.ctl > 1.3).length;
+    // cociente agudo/crónico promediado en 7 días: el del día exacto sube y baja con la semana (diente de sierra)
+    // y haría que la misma semana de entrenamiento se valorase distinto un lunes que un jueves
+    const ult7 = hist.slice(-7).filter(h => h.ctl > 0);
+    const ratio = ctl > 0 && ult7.length ? ult7.reduce((s, h) => s + h.atl / h.ctl, 0) / ult7.length : null; const ratioDia = ctl > 0 ? atl / ctl : null;
+    const dias13 = hist.slice(-14).filter(h => h.ctl > 15 && h.atl / h.ctl > 1.3).length;
     const lowCtl = ctl < 15;
     const estado = lowCtl ? (w[3] > Math.max(1, avgPrev) * 1.3 && avgPrev > 0 ? 'en_aumento' : 'baja') : ratio > 1.5 ? 'alta' : ratio > 1.3 ? 'elevada' : ratio > 1.1 ? 'en_aumento' : ratio < 0.8 ? 'baja' : 'estable';
-    return this.ind(estado, [`TRIMP semanal (4 últimas): ${w.join(' · ')} · media de las 4 anteriores: ${Math.round(avgPrev)}.`, lowCtl ? `Carga crónica baja (CTL ${Math.round(ctl)}): tras un parón el cociente agudo/crónico se dispara con poco volumen, así que se usa la comparación semanal.` : `Carga aguda/crónica: ${ratio.toFixed(2)} (ATL ${Math.round(atl)} / CTL ${Math.round(ctl)}); ${dias13} de los últimos 14 días por encima de 1,3.`], { evidencia: 'TRIMP diario de 160 días', n: ks.length, reglas: ['A-TRIMP', 'D6'], ratio, ctl: Math.round(ctl), atl: Math.round(atl), semanas: w, dias13, lowCtl });
+    return this.ind(estado, [`TRIMP semanal (4 últimas): ${w.join(' · ')} · media de las 4 anteriores: ${Math.round(avgPrev)}.`, lowCtl ? `Carga crónica baja (CTL ${Math.round(ctl)}): tras un parón el cociente agudo/crónico se dispara con poco volumen, así que se usa la comparación semanal.` : `Carga aguda/crónica: ${ratio.toFixed(2)} de media en 7 días (hoy ${ratioDia.toFixed(2)}: ATL ${Math.round(atl)} / CTL ${Math.round(ctl)}); ${dias13} de los últimos 14 días por encima de 1,3.`], { evidencia: 'TRIMP diario de 160 días', n: ks.length, reglas: ['A-TRIMP', 'D6'], ratio, ctl: Math.round(ctl), atl: Math.round(atl), semanas: w, dias13, lowCtl });
   },
   fatigueIndicator(end) {
     const e = iso(end), s7 = iso(addDays(D8(end), -6)), s14 = iso(addDays(D8(end), -13)), s28 = iso(addDays(D8(end), -27));
@@ -9128,6 +9146,138 @@ document.addEventListener('DOMContentLoaded', () => {
     const b = document.getElementById('act-orig-btn'); if (b) b.hidden = !a.original;
     if (a.deporte_fit) document.getElementById('act-meta')?.insertAdjacentHTML('beforeend', ` <span class="ui-muted">· FIT: ${UI.esc(a.deporte_fit)}</span>`);
     if (a.segmentos?.length) document.getElementById('act-gen')?.insertAdjacentHTML('beforeend', `<div class="card mb-24"><div class="card-title">Segmentos del multideporte</div><div class="table-wrap"><table><thead><tr><th>Segmento</th><th>Inicio</th><th>Tiempo</th><th>Distancia</th><th>FC media</th><th>Potencia</th></tr></thead><tbody>${a.segmentos.map(s => `<tr><td>${UI.esc(s.deporte)}${s.subdeporte && s.subdeporte !== 'generic' ? ' / ' + UI.esc(s.subdeporte) : ''}</td><td>${s.inicio ? new Date(s.inicio).toLocaleTimeString('es-ES') : '—'}</td><td>${fmtDur(s.duracion_s)}</td><td>${s.distancia_km ?? '—'} km</td><td>${s.fc_media ?? '—'}</td><td>${s.potencia_media ?? '—'}</td></tr>`).join('')}</tbody></table></div></div>`);
+  };
+})();
+
+// ============================================================
+// PULSO SIN PICOS Y VALORACIÓN TRAS IMPORTAR
+// - Picos breves de FC (≤ 3 s, ≥ 4 ppm sobre la mediana de ±10 s, que entran y salen de golpe y sobresalen
+//   de todo su entorno) se marcan como artefacto: no cuentan en zonas, TRIMP ni máximos.
+// - La FC máxima que usa el motor es la máxima sin picos (repetida al menos dos veces).
+// - Si declaras tu FC máxima real de la sesión, manda sobre todo lo demás.
+// - Al importar actividades recientes, se pide la valoración (RPE, sensaciones, molestias, FC máx real).
+// ============================================================
+ENG.hrArtifacts = function (ser) {
+  const ok = ser.filter(p => p.hrOk);
+  if (ok.length < 20) return ser;
+  const med = new Array(ok.length); let lo = 0, hi = 0;
+  for (let i = 0; i < ok.length; i++) {
+    while (ok[lo].el < ok[i].el - 10) lo++;
+    while (hi < ok.length - 1 && ok[hi + 1].el <= ok[i].el + 10) hi++;
+    const w = ok.slice(lo, hi + 1).map(p => p.hr).sort((a, b) => a - b); med[i] = w[w.length >> 1];
+  }
+  const cand = ok.map((p, i) => p.hr - med[i] >= 4 || med[i] - p.hr >= 20);
+  const picos = [];
+  for (let i = 0; i < ok.length; i++) {
+    if (!cand[i]) continue;
+    let j = i; while (j + 1 < ok.length && cand[j + 1] && ok[j + 1].el - ok[j].el <= 2) j++;
+    const dur = ok[j].el - ok[i].el + (ok[i].dt || 1);
+    // breve, con datos normales antes y después, que entra y sale de golpe y sobresale de todo su entorno (±10 s)
+    if (dur <= 3 && i > 0 && j < ok.length - 1) {
+      const g = ok.slice(i, j + 1); const up = g[0].hr > med[i];
+      const ext = up ? Math.max(...g.map(p => p.hr)) : Math.min(...g.map(p => p.hr));
+      const around = ok.filter((p, k) => (k < i || k > j) && Math.abs(p.el - ok[i].el) <= 10).map(p => p.hr);
+      const brusco = Math.abs(g[0].hr - ok[i - 1].hr) >= 3 && Math.abs(g.at(-1).hr - ok[j + 1].hr) >= 3;
+      const sobresale = around.length && (up ? ext - Math.max(...around) >= 3 : Math.min(...around) - ext >= 10);
+      if (!(brusco && sobresale)) { i = j; continue; }
+      g.forEach(p => { p.hrArt = true; p.hrOk = false; });
+      picos.push({ hr: Math.max(...g.map(p => p.hr)), base: med[i], dur_s: Math.round(dur), el: Math.round(ok[i].el), tipo: g[0].hr > med[i] ? 'pico' : 'caída' });
+    }
+    i = j;
+  }
+  ser._hrPicos = picos;
+  return ser;
+};
+// Máxima sin picos: quitados los artefactos, el valor más alto que se repite al menos dos veces (un registro suelto no cuenta)
+ENG.hrSustained = function (pts) {
+  const H = pts.filter(p => p.hrOk).map(p => p.hr).sort((a, b) => b - a);
+  return H.length ? (H.length > 1 ? H[1] : H[0]) : null;
+};
+ENG.hrMaxAct = function (act, ser) {
+  ser = ser || ENG.series(act);
+  const reloj = act.fc_max || null; const real = +act.contexto?.fc_max_real || null;
+  const sost = ser.some(p => p.hrOk) ? ENG.hrSustained(ser) : null;
+  const picos = (ser._hrPicos || []).filter(x => x.tipo === 'pico');
+  const notas = [];
+  if (reloj && sost && reloj - sost >= 2) notas.push(`El reloj marca ${reloj} ppm; la máxima sin picos es ${sost}${picos.length ? `. Picos breves descartados: ${picos.length} (hasta ${Math.max(...picos.map(x => x.hr))} ppm, ${Math.max(...picos.map(x => x.dur_s))} s como mucho)` : ''}.`);
+  if (real) notas.push(`Máxima real declarada por ti: ${real} ppm.`);
+  return { v: real || sost || reloj, src: real ? 'declarado' : sost ? 'calculado' : 'medido', reloj, sostenida: sost, picos, nota: notas.join(' ') || null };
+};
+
+// ---------- Valoración tras importar ----------
+const FEED = {
+  cola: [],
+  pendiente(a) { return a && ['carrera', 'ciclismo', 'duatlon', 'triatlon'].includes(a.tipo) && a.contexto?.rpe == null && !a.contexto?.valoracion_omitida; },
+  recientes(ids) { const lim = iso(addDays(UI.today(), -3)); return ids.map(id => getActivities().find(a => a.id === id)).filter(a => a && a.fecha.slice(0, 10) >= lim && this.pendiente(a)).sort((x, y) => x.fecha.localeCompare(y.fecha)).map(a => a.id); },
+  start(ids) { this.cola = this.recientes(ids); if (this.cola.length) this.open(this.cola[0]); },
+  open(id) {
+    const a = getActivities().find(x => x.id === id); if (!a) return;
+    const M = ENG.hrMaxAct(a); const c = a.contexto || {}; const restantes = this.cola.filter(x => x !== id).length;
+    let m = document.getElementById('feed-modal');
+    if (!m) { document.body.insertAdjacentHTML('beforeend', '<div class="modal-overlay" id="feed-modal" role="dialog" aria-modal="true" aria-labelledby="feed-title"><div class="modal" style="width:620px;max-width:96vw"><div id="feed-body"></div></div></div>'); m = document.getElementById('feed-modal'); }
+    const v = x => x == null ? '' : UI.esc(String(x));
+    const opt = (n, sel) => Array.from({ length: n }, (_, i) => `<option value="${i + 1}" ${+sel === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('');
+    document.getElementById('feed-body').innerHTML = `<h3 id="feed-title">¿Cómo ha ido?</h3>
+      <div class="ui-sub" style="margin:-10px 0 12px">${UI.esc(a.titulo || 'Actividad')} · ${fmtDate(a.fecha)} · ${(a.distancia_km || 0).toFixed(2)} km · ${fmtDur(a.duracion_s)}${a.fc_media ? ` · FC media ${a.fc_media}` : ''}</div>
+      ${M.sostenida ? `<div class="card" style="padding:10px;margin-bottom:10px"><div class="form-label" style="margin:0 0 4px">Pulso máximo</div>
+        <div style="font-size:12.5px">Reloj: <b>${M.reloj ?? '—'}</b> ppm · máxima sin picos: <b>${M.sostenida}</b> ppm${M.picos.length ? `<div class="text-muted" style="font-size:11.5px">${M.picos.length} pico(s) breve(s) descartado(s) como artefacto del sensor (hasta ${Math.max(...M.picos.map(x => x.hr))} ppm).</div>` : ''}</div>
+        <div class="form-group" style="margin:8px 0 0"><label class="form-label" for="fb-fcmax">Tu FC máxima real en esta sesión (corrígela si no es así)</label><input class="form-input" id="fb-fcmax" type="number" min="80" max="230" value="${v(c.fc_max_real ?? M.sostenida)}" style="max-width:140px"></div></div>` : ''}
+      <div class="grid-3">
+        <div class="form-group"><label class="form-label" for="fb-rpe">Esfuerzo (RPE 1-10)</label><select class="form-input" id="fb-rpe"><option value="">—</option>${opt(10, c.rpe)}</select></div>
+        <div class="form-group"><label class="form-label" for="fb-fatiga">Fatiga antes (1 fresco · 5 muy cansado)</label><select class="form-input" id="fb-fatiga"><option value="">—</option>${opt(5, c.fatiga)}</select></div>
+        <div class="form-group"><label class="form-label" for="fb-sueno">Sueño la noche anterior (h)</label><input class="form-input" id="fb-sueno" type="number" step="0.5" min="0" max="14" value="${v(c.sueno_h)}"></div>
+        <div class="form-group"><label class="form-label" for="fb-temp">Temperatura del aire (°C)</label><input class="form-input" id="fb-temp" type="number" value="${v(c.temperatura)}"></div>
+        <div class="form-group"><label class="form-label" for="fb-molz">Molestia: zona</label><input class="form-input" id="fb-molz" placeholder="p. ej. gemelo derecho" value="${v(c.molestias?.[0]?.zona)}"></div>
+        <div class="form-group"><label class="form-label" for="fb-moli">Molestia: intensidad (0-10)</label><input class="form-input" id="fb-moli" type="number" min="0" max="10" value="${v(c.molestias?.[0]?.intensidad)}"></div></div>
+      <div class="form-group"><label class="form-label" for="fb-notas">Sensaciones y notas</label><textarea class="form-input" id="fb-notas" rows="2" placeholder="cómo te has encontrado, algo raro con el pulsómetro…">${v(c.notas)}</textarea></div>
+      <div class="text-muted" style="font-size:11.5px">Todo es opcional. Lo usan el análisis de la sesión, la revisión semanal y el seguimiento de asimilación.</div>
+      <div class="modal-footer"><button class="btn btn-secondary" onclick="FEED.skip('${a.id}')">Ahora no</button><button class="btn btn-primary" onclick="FEED.save('${a.id}')">${restantes ? `Guardar y siguiente (${restantes})` : 'Guardar'}</button></div>`;
+    m.classList.add('open');
+  },
+  next(id) { this.cola = this.cola.filter(x => x !== id); document.getElementById('feed-modal')?.classList.remove('open'); if (this.cola.length) this.open(this.cola[0]); else if (currentView === 'actividad') engRenderActivity?.(); },
+  skip(id) { const acts = getActivities(); const a = acts.find(x => x.id === id); if (a) { a.contexto = { ...(a.contexto || {}), valoracion_omitida: true }; saveActivities(acts); } this.next(id); },
+  save(id) {
+    const acts = getActivities(); const a = acts.find(x => x.id === id); if (!a) return;
+    const g = k => document.getElementById(k)?.value.trim() ?? ''; const n = k => g(k) === '' ? null : +g(k);
+    const fcm = n('fb-fcmax'); const M = ENG.hrMaxAct({ ...a, contexto: { ...(a.contexto || {}), fc_max_real: null } });
+    if (fcm != null && (fcm < 80 || fcm > 230)) return toast('La FC máxima debe estar entre 80 y 230 ppm');
+    if (fcm != null && a.fc_media && fcm < a.fc_media) return toast('La FC máxima no puede ser menor que la media de la sesión');
+    const mi = n('fb-moli'), mz = g('fb-molz');
+    a.contexto = { ...(a.contexto || {}), rpe: n('fb-rpe'), fatiga: n('fb-fatiga'), sueno_h: n('fb-sueno'), temperatura: n('fb-temp'), notas: g('fb-notas') || null,
+      molestias: mz && mi != null ? [{ zona: mz, intensidad: Math.min(10, mi) }] : (a.contexto?.molestias || []),
+      // sólo se guarda si confirma o corrige algo distinto de lo que da el reloj
+      fc_max_real: fcm != null && (fcm !== M.reloj || a.contexto?.fc_max_real != null) ? fcm : null, valoracion_omitida: false };
+    saveActivities(acts); try { _engCache.clear(); } catch { }
+    if (mz && mi >= 4) toast(`Molestia de ${mi}/10 en ${mz}: el entrenador la tendrá en cuenta. Si es punzante o va a más, no la fuerces.`, 7000); else toast('Valoración guardada');
+    this.next(id);
+  }
+};
+(function () {
+  // al terminar de importar: valoración de las actividades de los últimos 3 días
+  const ip0 = impProcess;
+  impProcess = async function () {
+    const antes = new Set(IMP.queue.filter(q => q.actId).map(q => q.actId));
+    await ip0.apply(this, arguments);
+    const nuevas = IMP.queue.filter(q => q.actId && !antes.has(q.actId) && ['ok', 'avisos'].includes(q.st)).map(q => q.actId);
+    if (nuevas.length) FEED.start(nuevas);
+  };
+  // en la ficha: recordatorio si falta la valoración (sólo actividades de las 2 últimas semanas)
+  const ra0 = renderActividad;
+  renderActividad = function () {
+    ra0.apply(this, arguments);
+    const a = getActivities().find(x => x.id === currentActivityId);
+    document.getElementById('feed-banner')?.remove();
+    const el = document.getElementById('act-gen'); if (!el || !a) return;
+    if (FEED.pendiente(a) && a.fecha.slice(0, 10) >= iso(addDays(UI.today(), -14)))
+      el.insertAdjacentHTML('beforebegin', `<div class="ui-alert" id="feed-banner" style="margin-bottom:10px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap"><span>Falta tu valoración de esta sesión: esfuerzo, sensaciones, molestias y FC máxima real.</span><button class="btn btn-primary btn-sm" onclick="FEED.cola=['${a.id}'];FEED.open('${a.id}')">Valorar</button></div>`);
+  };
+  // el formulario «Plan y contexto» de la ficha no debe borrar la FC máxima declarada
+  const sp0 = engSavePlan;
+  engSavePlan = function () {
+    const a0 = getActivities().find(x => x.id === currentActivityId); const keep = a0?.contexto ? { fc_max_real: a0.contexto.fc_max_real ?? null } : {};
+    sp0.apply(this, arguments);
+    const acts = getActivities(); const a = acts.find(x => x.id === currentActivityId);
+    if (a && keep.fc_max_real != null) { a.contexto = { ...(a.contexto || {}), ...keep }; saveActivities(acts); _engCache.clear(); engRenderActivity(); }
   };
 })();
 
